@@ -25,8 +25,13 @@ Brick.mock.handle(type, fn)        // browser only: fake a native command handle
 Brick.mock.emit(type, payload, ms) // browser only: fake a native event
 ```
 
-Native buffers events for a page until that page has sent `ready`.
+Native does **not** buffer: events for a page that hasn't sent `ready` yet are dropped. When `ready` arrives,
+native sends `init` followed by the complete current state (`spotify`, `artwork`, `audioStatus`, `unlock`, and
+`peek` / `ending` if they apply). The same happens again if a page reloads (e.g. after a web-process crash), so
+handlers must be idempotent: `ending` in particular may arrive more than once.
 Pages must register their `Brick.on(...)` handlers **before** calling `Brick.ready()`.
+If the primary lock page never becomes ready (after retries), native ends the session rather than leave a
+black screen with no way to unlock.
 
 All timestamps are **milliseconds since the Unix epoch** (JS `Date.now()` scale).
 

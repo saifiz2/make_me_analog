@@ -47,14 +47,21 @@ final class Gallery {
     }
 
     func urls(limit: Int? = nil) -> [String] {
-        let n = limit.map { min($0, images.count) } ?? images.count
+        lock.lock()
+        let count = images.count
+        lock.unlock()
+        let n = limit.map { min($0, count) } ?? count
         return (0..<n).map { "brick://gallery/\($0)" }
     }
 
     func payload() -> [String: Any] {
-        [
-            "folder": folder.map { $0.path as Any } ?? NSNull(),
-            "count": images.count,
+        lock.lock()
+        let folderPath = folder?.path
+        let count = images.count
+        lock.unlock()
+        return [
+            "folder": folderPath.map { $0 as Any } ?? NSNull(),
+            "count": count,
             "images": urls(limit: 12).map { $0 + "?size=480" },
         ]
     }
@@ -77,7 +84,7 @@ final class Gallery {
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
         let out = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+        guard let dest = CGImageDestinationCreateWithData(out as CFMutableData, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: 0.86] as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { return nil }
         cache.setObject(out, forKey: key, cost: out.length)

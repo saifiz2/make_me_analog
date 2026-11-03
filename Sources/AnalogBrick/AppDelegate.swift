@@ -44,6 +44,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SetupWindowDelegate {
     private var setup: SetupWindowController?
     private var lock: LockController?
     private var snapshotter: Snapshotter?
+    private var instanceLockFD: Int32 = -1
+    private var watchTimer: Timer?
+
+    private var instanceLockPath: String { store.directory.appendingPathComponent("instance.lock").path }
 
     init(options: LaunchOptions) {
         self.options = options
@@ -62,36 +66,119 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SetupWindowDelegate {
             return
         }
 
-        // One instance only (the login agent and a manual launch could otherwise race).
-        let others = NSRunningApplication.runningApplications(withBundleIdentifier: AppInfo.bundleID)
-            .filter { $0.processIdentifier != getpid() && !$0.isTerminated }
-        if let other = others.first {
-            if !options.resumeOnly { _ = other.activate(options: []) }
+        // Started by the login agent (at login, or kick-started as a watchdog when a session begins).
+        if options.resumeOnly {
+            guard let record = activeSessionOrRecordExpired() else {
+                NSApp.terminate(nil)        // nothing to do; exit 0 so launchd doesn't restart us
+                return
+            }
+            if acquireInstanceLock() {
+                becomeLock(resuming: record)
+            } else {
+                watchRunningInstance()      // another instance holds the lock; take over if it dies
+            }
+            return
+        }
+
+        // A normal launch. One instance only: an exclusive flock picks a deterministic winner.
+        guard acquireInstanceLock() else {
+            NSRunningApplication.runningApplications(withBundleIdentifier: AppInfo.bundleID)
+                .first { $0.processIdentifier != getpid() && !$0.isTerminated }
+                .map { _ = $0.activate(options: []) }
             NSApp.terminate(nil)
             return
         }
 
         NSApp.mainMenu = MainMenu.standard()
-        gallery.scan(path: store.settings.galleryFolder)
-
-        if let record = store.loadSession() {
-            if record.isActive(at: Date()) {
-                startLock(record, resumed: true)
-                return
-            }
-            // The session ran out while the Mac was off or the app wasn't running: it counts.
-            store.appendHistory(SessionLogEntry(startedAt: record.startedAt,
-                                                plannedMs: Int64(record.duration * 1000),
-                                                focusedMs: Int64(record.duration * 1000),
-                                                completed: true))
-            store.saveSession(nil)
-        }
-
-        if options.resumeOnly {
-            NSApp.terminate(nil)
+        if let record = activeSessionOrRecordExpired() {
+            scanGallery { [weak self] in self?.startLock(record, resumed: true) }
             return
         }
+        scanGallery(nil)
         showSetup()
+    }
+
+    /// The active session, if any. A session that ran out while the Mac was off counts as completed.
+    private func activeSessionOrRecordExpired() -> SessionRecord? {
+        guard let record = store.loadSession() else { return nil }
+        if record.isActive(at: Date()) { return record }
+        store.appendHistory(SessionLogEntry(startedAt: record.startedAt,
+                                            plannedMs: Int64(record.duration * 1000),
+                                            focusedMs: Int64(record.duration * 1000),
+                                            completed: true))
+        store.saveSession(nil)
+        return nil
+    }
+
+    private func scanGallery(_ then: (() -> Void)?) {
+        let path = store.settings.galleryFolder
+        DispatchQueue.global(qos: .userInitiated).async { [gallery = self.gallery] in
+            gallery.scan(path: path)
+            DispatchQueue.main.async { then?() }
+        }
+    }
+
+    /// Exclusive, non-blocking. The kernel releases it if this process exits or is killed.
+    private func acquireInstanceLock() -> Bool {
+        if instanceLockFD >= 0 { return true }
+        let fd = open(instanceLockPath, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return true }  // can't create the lock file: don't make the app unlaunchable
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+            instanceLockFD = fd
+            return true
+        }
+        close(fd)
+        return false
+    }
+
+    private func becomeLock(resuming record: SessionRecord) {
+        watchTimer?.invalidate()
+        watchTimer = nil
+        NSApp.setActivationPolicy(.regular)
+        NSApp.mainMenu = MainMenu.standard()
+        scanGallery { [weak self] in self?.startLock(record, resumed: true) }
+    }
+
+    /// Watchdog mode: block on the instance lock in the background. If the running instance is killed
+    /// mid-session the lock is released, we get it, and the session is locked again within moments.
+    /// Exits (status 0, so launchd leaves it alone) as soon as no session is active.
+    private func watchRunningInstance() {
+        Log.app.info("Watching the running instance for the rest of the session")
+        let path = instanceLockPath
+        let thread = Thread { [weak self] in
+            let fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+            guard fd >= 0 else { DispatchQueue.main.async { exit(0) }; return }
+            _ = flock(fd, LOCK_EX)
+            DispatchQueue.main.async {
+                guard let self else { exit(0) }
+                self.instanceLockFD = fd
+                guard let record = self.activeSessionOrRecordExpired() else { exit(0) }
+                Log.app.info("The running instance went away mid-session; locking again")
+                self.becomeLock(resuming: record)
+            }
+        }
+        thread.name = "instance-lock-watch"
+        thread.start()
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            guard let self, self.lock == nil else { return }
+            if self.store.loadSession()?.isActive(at: Date()) != true { exit(0) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        watchTimer = timer
+    }
+
+    /// Start the login agent now so it can watch this process for the rest of the session.
+    private func startWatchdog() {
+        guard LoginItem.status() == "enabled" else { return }
+        DispatchQueue.global(qos: .utility).async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            p.arguments = ["kickstart", "gui/\(getuid())/\(LoginItem.label)"]
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            try? p.run()
+            p.waitUntilExit()
+        }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -144,6 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SetupWindowDelegate {
         lock = controller
         NSApp.mainMenu = MainMenu.locked()
         controller.start()
+        startWatchdog()
     }
 
     private func lockDidFinish() {

@@ -24,6 +24,9 @@ final class AudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var running = false
     private var starting = false
     private var restartAttempts = 0
+    /// Bumped by start() and stop(); an async start that finishes after a stop() sees a stale value and backs out.
+    private var generation = 0
+    private var explicitlyStopped = false
 
     static var hasPermission: Bool { CGPreflightScreenCaptureAccess() }
 
@@ -39,21 +42,25 @@ final class AudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func start() {
         guard !running, !starting else { return }
+        explicitlyStopped = false
         guard AudioCapture.hasPermission else {
             report(false, "permission")
             return
         }
         starting = true
+        generation &+= 1
+        let gen = generation
         Task { [weak self] in
-            await self?.startStream()
+            await self?.startStream(gen)
         }
     }
 
     @MainActor
-    private func startStream() async {
-        defer { starting = false }
+    private func startStream(_ gen: Int) async {
+        defer { if gen == generation { starting = false } }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            guard gen == generation else { return }     // stopped while we were waiting
             guard let display = content.displays.first else {
                 report(false, "error")
                 return
@@ -80,6 +87,10 @@ final class AudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
             try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
             try await stream.startCapture()
+            guard gen == generation else {               // stopped mid-start: never leave a stream running
+                try? await stream.stopCapture()
+                return
+            }
             self.stream = stream
             running = true
             restartAttempts = 0
@@ -87,13 +98,17 @@ final class AudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
             report(true, "ok")
             Log.audio.info("Audio capture started")
         } catch {
+            guard gen == generation else { return }
             Log.audio.error("Audio capture failed: \(error.localizedDescription, privacy: .public)")
             report(false, AudioCapture.hasPermission ? "error" : "permission")
         }
     }
 
     func stop() {
+        generation &+= 1
+        starting = false
         running = false
+        explicitlyStopped = true   // no automatic restarts after an explicit stop
         timer?.cancel()
         timer = nil
         if let stream {
@@ -213,7 +228,7 @@ final class AudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
             self.timer = nil
             self.onStatus?(false, "error")
             self.restartAttempts += 1
-            if self.restartAttempts <= 3 {
+            if !self.explicitlyStopped && self.restartAttempts <= 3 {
                 after(Double(self.restartAttempts) * 4) { [weak self] in self?.start() }
             }
         }

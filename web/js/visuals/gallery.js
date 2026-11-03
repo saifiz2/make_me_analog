@@ -46,6 +46,8 @@
   var PRESCALE_OVER = 1.4;          // pre-scale photos more than this much larger than needed
   var MAX_CANVAS = 6144;            // never allocate pre-scaled canvases larger than this
   var LOAD_TIMEOUT_MS = 20000;
+  var PRELOAD_AFTER = 2;            // start preparing the next photo this long after a crossfade ends
+  var ATTACH_LEAD = 1.2;            // attach the next photo (invisibly) this long before its crossfade
   var EMPTY_GRACE = 0.6;            // seconds without images before the empty state fades in
   var QUALITY_SCALE = { saver: 0.75, balanced: 1, high: 1 };   // photo backing resolution × dpr
 
@@ -292,8 +294,8 @@
       emptyCanvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;';
       var emptyCtx = ctx2d(emptyCanvas);
       var msg = div('gal-msg', 'position:absolute;left:0;right:0;top:50%;display:flex;flex-direction:column;align-items:center;' +
-        'text-align:center;padding:0 24px;color:rgba(246,242,234,0.5);-webkit-transform:translateY(-50%);transform:translateY(-50%);');
-      var icon = div('gal-icon', 'color:rgba(246,242,234,0.34);line-height:0;');
+        'text-align:center;padding:0 24px;color:rgba(246,242,234,0.56);-webkit-transform:translateY(-50%);transform:translateY(-50%);');
+      var icon = div('gal-icon', 'color:rgba(246,242,234,0.4);line-height:0;');
       icon.innerHTML = ICON_SVG;
       var text = div('gal-text', 'font-family:' + SERIF + ';font-style:italic;font-weight:400;letter-spacing:0.01em;line-height:1.5;' +
         'max-width:36em;text-wrap:balance;');
@@ -558,9 +560,9 @@
         var g = ctx2d(c);
         if (g) {
           g.globalAlpha = 1;
-          try { g.globalCompositeOperation = 'saturation'; g.fillStyle = 'rgba(128,128,128,0.18)'; g.fillRect(0, 0, c.width, c.height); } catch (e) { /* ignore */ }
+          try { g.globalCompositeOperation = 'saturation'; g.fillStyle = 'rgba(128,128,128,0.08)'; g.fillRect(0, 0, c.width, c.height); } catch (e) { /* ignore */ }
           g.globalCompositeOperation = 'source-over';
-          g.fillStyle = 'rgba(6,7,11,0.42)';
+          g.fillStyle = 'rgba(6,7,11,0.44)';
           g.fillRect(0, 0, c.width, c.height);
         }
         c.className = 'gal-backdrop';
@@ -622,8 +624,7 @@
         s.fadeStart = t;
         s.fadeDur = first ? INTRO : XFADE;
         if (frozen) s.fadeStart = t - s.fadeDur;                              // stills: show it at once
-        s.op = '';
-        slidesEl.appendChild(s.el);
+        if (!s.attached) { s.op = ''; slidesEl.appendChild(s.el); s.attached = true; }
         place(s, t);
         setOpacity(s.el, 0, 'op', s);
         if (current) outgoing.push(current);
@@ -641,31 +642,49 @@
         var ch = w >= h ? Math.max(4, Math.round(long * h / w)) : long;
         if (emptyCanvas.width !== cw || emptyCanvas.height !== ch) { emptyCanvas.width = cw; emptyCanvas.height = ch; lastEmptyDraw = -1; }
       }
+      // Computed per pixel (float maths, plain rounding) rather than with canvas gradients: canvas
+      // gradients are dithered per texel, and the compositor's ~9× upscale turns that into a grid.
+      var emptyImg = null, skyRows = null;
+      var SKY_RGB = SKY.map(U.hexToRgb);
       function drawEmpty(t) {
         if (!emptyCtx) return;
-        var g = emptyCtx, cw = emptyCanvas.width, ch = emptyCanvas.height, R = Math.max(cw, ch);
-        g.globalCompositeOperation = 'source-over';
-        g.globalAlpha = 1;
-        var sky = g.createLinearGradient(0, 0, 0, ch);
-        sky.addColorStop(0, SKY[0]); sky.addColorStop(0.55, SKY[1]); sky.addColorStop(1, SKY[2]);
-        g.fillStyle = sky;
-        g.fillRect(0, 0, cw, ch);
-        g.globalCompositeOperation = 'lighter';
-        var tt = t + blobPhase;
-        for (var i = 0; i < BLOBS.length; i++) {
-          var b = BLOBS[i];
-          var x = (b.x + b.ax * Math.sin(tt * b.fx * Math.PI * 2 + i * 1.7)) * cw;
-          var y = (b.y + b.ay * Math.cos(tt * b.fy * Math.PI * 2 + i * 2.3)) * ch;
-          var r = b.r * R * (1 + 0.06 * Math.sin(tt * 0.013 + i));
-          var grad = g.createRadialGradient(x, y, 0, x, y, r);
-          for (var k = 0; k <= 6; k++) {
-            var u = k / 6, a = b.a * Math.pow(1 - u * u, 2);
-            grad.addColorStop(u, 'rgba(' + b.c[0] + ',' + b.c[1] + ',' + b.c[2] + ',' + a.toFixed(4) + ')');
+        var cw = emptyCanvas.width, ch = emptyCanvas.height, R = Math.max(cw, ch), x, y, i;
+        if (!emptyImg || emptyImg.width !== cw || emptyImg.height !== ch) {
+          emptyImg = emptyCtx.createImageData(cw, ch);
+          skyRows = new Float32Array(ch * 3);
+          for (y = 0; y < ch; y++) {
+            var v = ch > 1 ? y / (ch - 1) : 0, a = v < 0.55 ? SKY_RGB[0] : SKY_RGB[1], b = v < 0.55 ? SKY_RGB[1] : SKY_RGB[2];
+            var f = v < 0.55 ? v / 0.55 : (v - 0.55) / 0.45;
+            f = f * f * (3 - 2 * f);
+            for (i = 0; i < 3; i++) skyRows[y * 3 + i] = (a[i] + (b[i] - a[i]) * f) * 255;
           }
-          g.fillStyle = grad;
-          g.fillRect(0, 0, cw, ch);
         }
-        g.globalCompositeOperation = 'source-over';
+        var tt = t + blobPhase, nb = BLOBS.length;
+        var bx = new Float32Array(nb), by = new Float32Array(nb), bk = new Float32Array(nb);
+        for (i = 0; i < nb; i++) {
+          var bl = BLOBS[i];
+          bx[i] = (bl.x + bl.ax * Math.sin(tt * bl.fx * Math.PI * 2 + i * 1.7)) * cw;
+          by[i] = (bl.y + bl.ay * Math.cos(tt * bl.fy * Math.PI * 2 + i * 2.3)) * ch;
+          var r = bl.r * R * (1 + 0.06 * Math.sin(tt * 0.013 + i));
+          bk[i] = 1 / (r * r);
+        }
+        var d = emptyImg.data, o = 0;
+        for (y = 0; y < ch; y++) {
+          var sr = skyRows[y * 3], sg = skyRows[y * 3 + 1], sb = skyRows[y * 3 + 2], py = y + 0.5;
+          for (x = 0; x < cw; x++) {
+            var cr = sr, cg = sg, cb = sb, px = x + 0.5;
+            for (i = 0; i < nb; i++) {
+              var dx = px - bx[i], dy = py - by[i], u2 = (dx * dx + dy * dy) * bk[i];
+              if (u2 < 1) {
+                var w = (1 - u2) * (1 - u2) * BLOBS[i].a, c = BLOBS[i].c;
+                cr += c[0] * w; cg += c[1] * w; cb += c[2] * w;
+              }
+            }
+            d[o] = cr; d[o + 1] = cg; d[o + 2] = cb; d[o + 3] = 255;   // Uint8ClampedArray rounds and clamps
+            o += 4;
+          }
+        }
+        emptyCtx.putImageData(emptyImg, 0, 0);
       }
       function styleMessage() {
         var w = W(), h = H();
@@ -710,10 +729,20 @@
           // Loading / promotion.
           if (!noImages) {
             if (next && next.state === 'loading' && nowMs() - next.started > LOAD_TIMEOUT_MS) fail(next);
-            if (!next) next = loadNext();
+            // Prepare the next photo mid-way through the current one, never during a crossfade
+            // (decoding / downscaling a big photo can cost a frame or two).
+            if (!next && (!current || forceNext || t >= current.fadeStart + current.fadeDur + PRELOAD_AFTER)) next = loadNext();
             if (next && next.state === 'ready') {
               if (!current) promote(next, t, frozen);
               else if (forceNext || t >= current.startT + PERIOD) promote(next, t, false);
+              else if (!next.attached && t >= current.startT + PERIOD - ATTACH_LEAD) {
+                // Put it in the tree (invisibly) a moment early so its texture is uploaded before it shows.
+                next.startT = current.startT + PERIOD;
+                slidesEl.appendChild(next.el);
+                next.attached = true;
+                place(next, t);
+                setOpacity(next.el, 0.002, 'op', next);
+              }
             }
           }
 
@@ -753,7 +782,7 @@
           if (emptyAmt > 0) {
             if (!emptyShown) { empty.style.visibility = 'visible'; emptyShown = true; }
             setOpacity(empty, ease(emptyAmt), 'op', empty);
-            var interval = env.quality === 'saver' ? 0 : 1 / 30;
+            var interval = env.quality === 'saver' ? 1 / 12 : 1 / 20;   // drifts far below a texel per redraw
             if (lastEmptyDraw < 0 || clock - lastEmptyDraw >= interval || frozen) { drawEmpty(t); lastEmptyDraw = clock; }
           } else if (emptyShown) {
             empty.style.visibility = 'hidden';

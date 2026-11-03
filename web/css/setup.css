@@ -85,7 +85,7 @@ body { background: var(--ink-0); }
 
 /* Stats strip */
 .stats { display: flex; align-items: center; gap: 14px; font-size: var(--fs-s); color: var(--text-3); white-space: nowrap; }
-.stat b { font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.stat b { font-weight: 500; color: var(--text-2); }
 .stat-sep { width: 3px; height: 3px; border-radius: 50%; background: var(--text-4); }
 .stats-empty { font-family: var(--font-display); font-style: italic; font-size: 14px; color: var(--text-3); }
 .spark { display: flex; align-items: flex-end; gap: 3px; height: 18px; padding-left: 2px; }
@@ -129,38 +129,66 @@ body { background: var(--ink-0); }
 .preview-shade {
   position: absolute; inset: 0; pointer-events: none; z-index: 1;
   background:
-    linear-gradient(180deg, rgba(3, 4, 7, 0.28) 0%, rgba(3, 4, 7, 0) 22%),
+    radial-gradient(70% 55% at 0% 0%, rgba(3, 4, 7, 0.38), rgba(3, 4, 7, 0) 70%),
     linear-gradient(0deg, rgba(3, 4, 7, 0.72) 0%, rgba(3, 4, 7, 0.32) 22%, rgba(3, 4, 7, 0) 44%);
 }
 
-/* A faint mock of the lock screen's clock, so the preview reads as "this is what you'll see". */
+/* A faint, scaled-down copy of the lock screen's timer (lock.css .timer), so the preview reads as
+   "this is what you'll see". Sized in container units so it scales with the preview like the real one. */
+.preview { container-type: inline-size; }
 .preview-lock {
-  position: absolute; left: 0; right: 0; top: 0; bottom: 0; z-index: 2;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding-bottom: 6%;
+  position: absolute; left: 4.2%; top: 5.2%; z-index: 2;
+  display: inline-flex; flex-direction: column; align-items: flex-start;
+  max-width: 48%;
   pointer-events: none;
-  color: rgba(246, 242, 234, 0.78);
-  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.45);
-}
-.pl-time {
-  font-family: var(--font-sans);
-  font-weight: 200;
-  font-size: clamp(44px, 6.6vw, 84px);
-  letter-spacing: -0.02em;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
+  color: rgba(250, 247, 241, 0.86);
+  text-shadow: 0 1px 18px rgba(0, 0, 0, 0.4);
+  transition: opacity var(--t-slow) var(--ease);
 }
 .pl-intent {
-  margin-top: 12px;
-  max-width: 70%;
+  max-width: 100%;
+  margin: 0 0 1px 0.1em;
   font-family: var(--font-display);
   font-style: italic;
-  font-size: clamp(14px, 1.35vw, 17px);
-  color: rgba(246, 242, 234, 0.6);
-  text-align: center;
+  font-size: 13px;
+  font-size: clamp(11.5px, 2.2cqw, 17px);
+  line-height: 1.3;
+  color: rgba(246, 242, 234, 0.7);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .pl-intent:empty { display: none; }
+.pl-time {
+  font-family: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+  font-weight: 200;
+  font-size: 44px;
+  font-size: clamp(34px, 7.4cqw, 66px);
+  line-height: 1;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+.pl-meta {
+  margin: 5px 0 0 0.12em;
+  font-size: 10.5px;
+  font-size: clamp(10px, 1.45cqw, 12.5px);
+  letter-spacing: 0.02em;
+  color: rgba(246, 242, 234, 0.58);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.pl-sep { margin: 0 0.45em; opacity: 0.6; }
+.pl-progress {
+  position: relative; align-self: stretch;
+  height: 2px; margin: 8px 0 0 0.12em;
+  border-radius: 2px;
+  background: rgba(246, 242, 234, 0.13);
+  overflow: hidden;
+}
+.pl-progress span {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 4%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, rgba(242, 194, 124, 0.4), rgba(242, 194, 124, 0.9));
+}
 
 .preview-caption {
   position: absolute; left: 22px; right: 22px; bottom: 18px; z-index: 3;
@@ -285,6 +313,7 @@ button.pill:hover { background: rgba(30, 32, 40, 0.7); }
 .group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-height: 18px; }
 .label { font-size: var(--fs-s); font-weight: 600; color: var(--text-2); letter-spacing: 0.01em; }
 .hint-right, .ends { font-size: var(--fs-s); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ends { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* Duration stepper */
 .stepper {
@@ -612,7 +641,7 @@ label.pref-row { cursor: pointer; }
 .prefs .slider::-webkit-slider-thumb { width: 16px; height: 16px; margin-top: -6px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(0, 0, 0, 0.2); }
 .prefs .slider:focus-visible { outline: none; }
 .prefs .slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgba(242, 194, 124, 0.55); }
-.slider-val { min-width: 52px; text-align: right; font-size: var(--fs-s); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.slider-val { min-width: 44px; white-space: nowrap; text-align: right; font-size: var(--fs-s); color: var(--text-2); font-variant-numeric: tabular-nums; }
 
 .select-wrap { position: relative; flex: none; }
 .select {

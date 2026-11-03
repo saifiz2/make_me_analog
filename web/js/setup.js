@@ -409,8 +409,10 @@
   function intentionValue() { return $('intention').value.trim(); }
 
   function renderLockMock() {
-    $('plTime').textContent = U.formatCountdown(S.settings.durationMin * 60000);
+    var ms = S.settings.durationMin * 60000;
+    $('plTime').textContent = U.formatCountdown(ms);
     $('plIntent').textContent = intentionValue();
+    $('plEnds').textContent = 'ends ' + U.formatClock(Date.now() + ms);
   }
 
   // ───────────────────────────── duration ─────────────────────────────
@@ -428,7 +430,9 @@
   }
 
   function setDuration(min, opts) {
-    min = Math.round(U.clamp(+min || DEFAULTS.durationMin, DUR_MIN, DUR_MAX));
+    min = +min;
+    if (!isFinite(min)) min = DEFAULTS.durationMin;
+    min = Math.round(U.clamp(min, DUR_MIN, DUR_MAX));
     var changed = min !== S.settings.durationMin;
     S.settings.durationMin = min;
     renderDuration();
@@ -482,7 +486,9 @@
     if (days <= 0) txt = 'Ends at ' + t;
     else if (days === 1) txt = 'Ends tomorrow at ' + t;
     else txt = 'Ends ' + end.toLocaleDateString(undefined, { weekday: 'long' }) + ' at ' + t;
+    if (S.settings.durationMin >= 90) txt = U.formatMinutesLong(S.settings.durationMin) + ' · ' + txt;
     $('endsAt').textContent = txt;
+    $('plEnds').textContent = 'ends ' + t;
   }
 
   // ───────────────────────────── PIN ─────────────────────────────
@@ -1008,7 +1014,7 @@
     sec = Math.round(sec);
     var m = Math.floor(sec / 60), s = sec % 60;
     if (m === 0) return s + ' s';
-    return s === 0 ? m + ' min' : m + ' min ' + s + ' s';
+    return s === 0 ? m + ' min' : m + ':' + (s < 10 ? '0' : '') + s;
   }
 
   function renderPrefs(force) {
@@ -1275,7 +1281,14 @@
       else if (e.key === 'Enter' && !(e.metaKey || e.ctrlKey)) { e.preventDefault(); commitDurInput(); }
     });
     dur.addEventListener('blur', commitDurInput);
-    dur.addEventListener('focus', function () { setTimeout(function () { try { dur.select(); } catch (e) { /* ignore */ } }, 0); });
+    // Select the number on focus so typing replaces it; keep that selection through the click's mouseup.
+    var durJustFocused = false;
+    dur.addEventListener('focus', function () {
+      try { dur.select(); } catch (e) { /* ignore */ }
+      durJustFocused = true;
+      setTimeout(function () { durJustFocused = false; }, 250);
+    });
+    dur.addEventListener('mouseup', function (e) { if (durJustFocused) e.preventDefault(); });
 
     var intention = $('intention');
     intention.addEventListener('input', function () {

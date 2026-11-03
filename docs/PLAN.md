@@ -62,6 +62,10 @@ The two halves talk over a small message bridge, specified in [`BRIDGE.md`](BRID
 | Plugging or unplugging displays | Overlays are rebuilt for the new display set |
 | Lid close / sleep | The timer runs on wall-clock time; on wake the lock re-asserts itself |
 | Hard reboot (hold power) | The session is saved to disk. A login agent relaunches the lock at login until the time is up |
+| Killing the process (e.g. from a launcher hotkey) | When a session starts, the login agent is kick-started as a watchdog that waits on the app's instance lock. If the app dies mid-session, the watchdog takes the lock and re-locks within a second. launchd restarts the watchdog itself if it is killed |
+| Force Quit from the Dock during a Spotify peek | During a peek, Analog Brick becomes an accessory app: no Dock icon, and it isn't listed in the Force Quit window. Do Not Disturb is re-applied when the peek ends |
+| A Spotify hang | All AppleScript runs off the main thread via `osascript`, killed after 3 s, with each event bounded to 2 s |
+| The lock page failing to load | Retried. If the primary display's page never becomes ready, the session ends (fail open) rather than leave a black screen with no way to unlock |
 | Notifications | Focus mode via the user's two Shortcuts; the overlay also sits above banners |
 
 Analog Brick is a commitment device, not DRM. Holding the power button, or holding ⇧ at login (which skips

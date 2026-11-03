@@ -64,14 +64,18 @@ final class FocusManager {
             p.arguments = args
             let out = Pipe()
             p.standardOutput = out
-            p.standardError = Pipe()
+            p.standardError = FileHandle.nullDevice
             var ok = false
             var text = ""
             do {
                 try p.run()
+                // A Shortcut that hangs (e.g. waiting on a prompt) must not hold anything up forever.
+                let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15, execute: killer)
                 let data = out.fileHandleForReading.readDataToEndOfFile()
                 p.waitUntilExit()
-                ok = p.terminationStatus == 0
+                killer.cancel()
+                ok = p.terminationReason == .exit && p.terminationStatus == 0
                 text = String(data: data, encoding: .utf8) ?? ""
             } catch {
                 ok = false
@@ -109,6 +113,7 @@ final class PowerAssertion {
 /// so a session interrupted by a restart picks up where it left off. It exits at once if no session is active.
 enum LoginItem {
     static let plistName = "com.analogbrick.AnalogBrick.resume.plist"
+    static let label = "com.analogbrick.AnalogBrick.resume"
 
     static var service: SMAppService { SMAppService.agent(plistName: plistName) }
 

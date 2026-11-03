@@ -35,6 +35,13 @@ final class LockController: NSObject, WebHostDelegate {
         "com.apple.notificationcenterui", "com.apple.WindowManager",
     ]
 
+    /// System dialogs that may need an answer (password, permission, accessibility); while one of them is
+    /// frontmost the watchdog does not steal focus back. loginwindow is deliberately absent (it hosts Force Quit).
+    static let mayHoldFocus: Set<String> = [
+        "com.apple.SecurityAgent", "com.apple.UserNotificationCenter", "com.apple.coreservices.uiagent",
+        "com.apple.universalaccessAuthWarn", "com.apple.accessibility.universalAccessAuthWarn",
+    ]
+
     var onFinish: ((SessionEndReason) -> Void)?
 
     private(set) var session: SessionRecord
@@ -61,6 +68,7 @@ final class LockController: NSObject, WebHostDelegate {
     private var audioStatus: [String: Any] = ["available": false, "reason": "permission"]
     private var autoplayed = false
     private var lastReassert = Date.distantPast
+    private var pendingScreenRebuild: DispatchWorkItem?
 
     private var settings: Settings { store.settings }
 
@@ -126,8 +134,22 @@ final class LockController: NSObject, WebHostDelegate {
             self.broadcast("audio", frame.payload(), droppable: true)
         }
         audio.onStatus = { [weak self] available, reason in self?.setAudioStatus(available, reason) }
-        if spotify.isRunning { audio.start() } else {
-            setAudioStatus(false, AudioCapture.hasPermission ? "spotify-not-running" : "permission")
+        updateAudioCapture()
+    }
+
+    /// Spotify's audio is only listened to while the music-reactive mode is on screen.
+    private func updateAudioCapture() {
+        guard !ending, !tornDown else { return }
+        if mode != "pulse" {
+            audio.stop()
+            return
+        }
+        if !AudioCapture.hasPermission {
+            setAudioStatus(false, "permission")
+        } else if !spotify.isRunning {
+            setAudioStatus(false, "spotify-not-running")
+        } else {
+            audio.start()
         }
     }
 
@@ -144,6 +166,7 @@ final class LockController: NSObject, WebHostDelegate {
         store.saveSession(nil)
         if peekUntil != nil {
             peekUntil = nil
+            NSApp.setActivationPolicy(.regular)
             spotify.hide()
             broadcast("peek", ["active": false, "endsAt": NSNull()])
             reassert(force: true)
@@ -177,6 +200,7 @@ final class LockController: NSObject, WebHostDelegate {
         if settings.focusEnabled { focus.turnOff() }
 
         NSApp.presentationOptions = []
+        NSApp.setActivationPolicy(.regular)
         for d in displays {
             d.host.teardown()
             d.window.dismiss()
@@ -189,8 +213,18 @@ final class LockController: NSObject, WebHostDelegate {
 
     // MARK: displays
 
+    /// The display the user is looking at (under the mouse) hosts the controls; the rest show only the visual.
+    private func orderedScreens() -> [NSScreen] {
+        var screens = NSScreen.screens
+        let mouse = NSEvent.mouseLocation
+        if let i = screens.firstIndex(where: { NSMouseInRect(mouse, $0.frame, false) }), i != 0 {
+            screens.insert(screens.remove(at: i), at: 0)
+        }
+        return screens
+    }
+
     private func buildDisplays() {
-        for (i, screen) in NSScreen.screens.enumerated() {
+        for (i, screen) in orderedScreens().enumerated() {
             let role = i == 0 ? "primary" : "secondary"
             let window = OverlayWindow(screen: screen)
             let size = screen.frame.size
@@ -216,19 +250,29 @@ final class LockController: NSObject, WebHostDelegate {
         displays.removeAll()
     }
 
+    private func scheduleScreensChanged() {
+        pendingScreenRebuild?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.screensChanged() }
+        pendingScreenRebuild = work
+        // Let the system finish reconfiguring (it posts a burst of notifications) before rebuilding.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
     private func screensChanged() {
         guard !tornDown else { return }
-        let screens = NSScreen.screens
-        if screens.map(\.displayID) == displays.map(\.window.displayID) {
-            for (d, s) in zip(displays, screens) where d.window.frame != s.frame {
-                d.window.setFrame(s.frame, display: true)
+        let current = Set(NSScreen.screens.map(\.displayID))
+        if current == Set(displays.map(\.window.displayID)) {
+            for d in displays {
+                if let s = NSScreen.screens.first(where: { $0.displayID == d.window.displayID }), d.window.frame != s.frame {
+                    d.window.setFrame(s.frame, display: true)
+                }
             }
         } else {
-            Log.lock.info("Displays changed (\(screens.count) now); rebuilding overlays")
+            Log.lock.info("Displays changed (\(current.count) now); rebuilding overlays")
             teardownDisplays()
             buildDisplays()
         }
-        reassert(force: true)
+        if peekUntil == nil { reassert(force: true) } else { bringToFront() }
     }
 
     private func bringToFront() {
@@ -278,9 +322,11 @@ final class LockController: NSObject, WebHostDelegate {
             after(0.4) { self?.hideIfForbidden(app) }
         }
         on(ws, NSWorkspace.didWakeNotification) { [weak self] _ in
-            self?.tick()
-            self?.reassert(force: true)
-            if self?.spotify.isRunning == true { self?.audio.restart() }
+            guard let self else { return }
+            self.tick()
+            guard !self.ending else { return }
+            self.reassert(force: true)
+            if self.mode == "pulse" && self.spotify.isRunning { self.audio.restart() }
         }
         on(ws, NSWorkspace.screensDidWakeNotification) { [weak self] _ in self?.reassert(force: true) }
         on(ws, NSWorkspace.activeSpaceDidChangeNotification) { [weak self] _ in self?.reassert(force: true) }
@@ -299,13 +345,13 @@ final class LockController: NSObject, WebHostDelegate {
             self?.reassert(force: true)
         }
         on(nc, NSApplication.didChangeScreenParametersNotification) { [weak self] _ in
-            // Let the system finish reconfiguring before rebuilding.
-            after(0.3) { self?.screensChanged() }
+            self?.scheduleScreensChanged()
         }
     }
 
     private func appActivated(_ app: NSRunningApplication) {
         guard !tornDown, app.processIdentifier != getpid() else { return }
+        if let id = app.bundleIdentifier, Self.mayHoldFocus.contains(id) { return }
         if peekUntil != nil {
             if app.bundleIdentifier == SpotifyController.bundleID { return }
             endPeek()
@@ -355,6 +401,7 @@ final class LockController: NSObject, WebHostDelegate {
         if ending { return }
         if unlock.tick(now: now) { broadcastUnlock() }
         if let until = peekUntil, now >= until { endPeek() }
+        if displays.isEmpty && !NSScreen.screens.isEmpty { screensChanged() }
         guard peekUntil == nil else { return }
 
         if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != getpid() {
@@ -375,6 +422,9 @@ final class LockController: NSObject, WebHostDelegate {
         let until = Date() + TimeInterval(settings.peekSeconds)
         peekUntil = until
         Log.lock.info("Spotify peek for \(self.settings.peekSeconds)s")
+        // While Spotify is in front our kiosk options don't apply and the Dock is back. As an accessory app,
+        // Analog Brick has no Dock icon (so no "Force Quit" on it) and isn't listed in the Force Quit window.
+        NSApp.setActivationPolicy(.accessory)
         for d in displays { d.window.level = OverlayWindow.peekLevel }
         broadcast("peek", ["active": true, "endsAt": until.epochMillis])
         if spotify.isRunning {
@@ -387,16 +437,19 @@ final class LockController: NSObject, WebHostDelegate {
     private func endPeek() {
         guard peekUntil != nil else { return }
         peekUntil = nil
+        NSApp.setActivationPolicy(.regular)
         spotify.hide()
         broadcast("peek", ["active": false, "endsAt": NSNull()])
         reassert(force: true)
+        // Control Center was reachable during the peek; make sure Do Not Disturb is still on.
+        if settings.focusEnabled { focus.turnOn() }
     }
 
     private func spotifyDidLaunch() {
         after(2.0) { [weak self] in
             guard let self, !self.ending else { return }
             if self.peekUntil == nil { self.spotify.hide() }
-            self.audio.restart()
+            if self.mode == "pulse" { self.audio.restart() }
             if !self.resumed { self.startAutoplayIfNeeded() }
         }
     }
@@ -447,6 +500,20 @@ final class LockController: NSObject, WebHostDelegate {
         ]
     }
 
+    /// A lock page that can't load would leave a black screen with no way to unlock. Fail open instead.
+    func webHostDidFail(_ host: WebHost, reason: String) {
+        guard !tornDown, !ending, let d = displays.first(where: { $0.host === host }) else { return }
+        Log.lock.error("Lock page on display \(d.index) failed (\(reason, privacy: .public))")
+        if d.role == "primary" || displays.allSatisfy({ $0.host.didFail }) {
+            Log.lock.error("Ending the session because the lock screen could not be shown")
+            finish(.unlocked)
+            after(0.5) { [weak self] in self?.teardownNow() }
+        }
+    }
+
+    /// Skip the outro (used when the page that would play it is gone).
+    private func teardownNow() { teardown(.unlocked) }
+
     func webHost(_ host: WebHost, didReceive type: String, payload: [String: Any]) {
         guard !tornDown else { return }
         let now = Date()
@@ -491,13 +558,13 @@ final class LockController: NSObject, WebHostDelegate {
             unlock.activity(now: now)
 
         case "mode.set":
-            guard let m = payload.string("mode"), VisualMode.all.contains(m), m != mode else { return }
+            guard !ending, let m = payload.string("mode"), VisualMode.all.contains(m), m != mode else { return }
             mode = m
             session.mode = m
             store.saveSession(session)
             store.update { $0.mode = m }
             broadcast("mode", ["mode": m])
-            if m == "pulse", spotify.isRunning, audioStatus["available"] as? Bool != true { audio.start() }
+            updateAudioCapture()
 
         default:
             break

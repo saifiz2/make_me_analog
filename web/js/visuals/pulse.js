@@ -36,7 +36,7 @@
   var NUM_BANDS = 32;
   var MAX_RIPPLES = 8;            // shader slots: 2 idle (breath) + 6 beat ripples
   var RIPPLE_LIFE = 7.5;          // seconds
-  var RIPPLE_GAP = 0.95;          // min seconds between beat ripples
+  var RIPPLE_GAP = 1.1;           // min seconds between beat ripples (≈ every other beat)
   var BREATH_PERIOD = 11.0;       // idle breath, seconds (≈ 5.5 breaths/min)
   var PALETTE_FADE = 2.0;         // seconds
 
@@ -61,9 +61,13 @@
     'uniform vec3 uNeb2;',
     'uniform float uGain;',
     '',
+    'uniform float uWarpOct;   // warp octaves (2…3)',
     'float fbmW(vec3 p) {',
     '  float s = 0.0, a = 0.5;',
-    '  for (int i = 0; i < 3; i++) { s += a * snoise(p); p = p * 2.02 + vec3(17.13, 3.71, 9.27); a *= 0.5; }',
+    '  for (int i = 0; i < 3; i++) {',
+    '    if (float(i) >= uWarpOct) break;',
+    '    s += a * snoise(p); p = p * 2.02 + vec3(17.13, 3.71, 9.27); a *= 0.5;',
+    '  }',
     '  return s;',
     '}',
     'float fbmD(vec3 p) {',
@@ -118,8 +122,10 @@
     'uniform float uT;',
     'uniform float uStarRot;',
     'uniform vec4 uSeed;',
+    'uniform vec2 uMotes;      // outward flow (cells), gain',
     '',
     'const float CW = PI / 32.0;   // angular width of one filament cell',
+    'const float MOTE_N = 72.0;    // mote cells around the circle (log-polar, square cells)',
     '',
     'float bandAt(float cellPos) {',
     '  float u = cellPos / 32.0;',
@@ -140,6 +146,25 @@
     '  return mix(vec3(0.70, 0.76, 1.0), vec3(1.0, 0.84, 0.68), b) * k * (0.04 + 0.30 * b * b * b) * tw;',
     '}',
     '',
+    '// Pollen: faint motes drifting slowly outward from the ring (log-polar cells).',
+    'vec3 motes(float r, float th) {',
+    '  float lr = log(max(r, 1e-3) / uR);',
+    '  if (lr < 0.0 || lr > 1.7) return vec3(0.0);',
+    '  vec2 g = vec2((th / TAU + 0.5) * MOTE_N, lr * MOTE_N / TAU - uMotes.x);',
+    '  vec2 id = floor(g);',
+    '  id.x = mod(id.x, MOTE_N);',
+    '  float h = hash12(id + uSeed.zw);',
+    '  if (h > 0.11) return vec3(0.0);',
+    '  vec2 f = fract(g) - (0.2 + 0.6 * hash22(id + uSeed.zw + 3.3));',
+    '  vec2 d = f * (r * TAU / MOTE_N);',
+    '  float rad = max(0.0026, uPx * 0.75);',
+    '  float b = exp(-dot(d, d) / (rad * rad)) * min(1.0, 0.0026 * 0.0026 / (rad * rad) * 1.6);',
+    '  float life = smoothstep(0.0, 0.25, lr) * (1.0 - smoothstep(0.4, 1.5, lr));',
+    '  float k = hash12(id + 9.1);',
+    '  float tw = 0.65 + 0.35 * sin(uT * (0.4 + 0.5 * k) + h * 70.0);',
+    '  return mix(uGlowA, uGlowB, k) * b * life * tw * (0.25 + 0.75 * k * k);',
+    '}',
+    '',
     'void main() {',
     '  vec2 p = (v_uv * 2.0 - 1.0) * uHalf;',
     '  float r = length(p);',
@@ -149,6 +174,7 @@
     '  float rip = 0.0, disp = 0.0;',
     '  for (int i = 0; i < ' + MAX_RIPPLES + '; i++) {',
     '    vec4 R = uRip[i];',
+    '    if (R.y <= 0.0) continue;',
     '    float x = (r - R.x) / R.z;',
     '    float g = exp(-x * x);',
     '    rip += R.y * g;',
@@ -172,7 +198,10 @@
     '  float k = floor(cell);',
     '  float spacing = CW * max(r, uR) / uPx;          // px between neighbouring filaments',
     '  float lod = smoothstep(2.5, 7.0, spacing);',
+    '  float E = bandAt(cell);',
     '  vec3 fil = vec3(0.0);',
+    '  vec3 corona = vec3(0.0);',
+    '  if (dr > -0.03 && dr < 0.9) {',
     '  for (int j = -1; j <= 1; j++) {',
     '    float kk = k + float(j);',
     '    float kc = clamp(kk, 0.0, 31.0);',
@@ -196,12 +225,13 @@
     '  }',
     '',
     '  // corona: fibrous, continuous glow whose reach follows the spectrum',
-    '  float E = bandAt(cell);',
     '  float reach = uLen.x + uLen.y * E;',
     '  float fib = 0.5 + 0.5 * snoise(vec2(m0 * 15.0 + uSeed.y, dr * 1.4 - uT * 0.02));',
     '  fib = 0.35 + 0.9 * fib * fib;',
     '  float cor = exp(-max(dr, 0.0) / (0.30 * reach + 0.02)) * smoothstep(-0.02, 0.004, dr) * fib;',
-    '  vec3 corona = mix(uGlowA, uGlowB, smoothstep(0.0, 0.22, dr)) * cor;',
+    '  cor *= 1.0 - smoothstep(0.55, 0.88, dr);',
+    '  corona = mix(uGlowA, uGlowB, smoothstep(0.0, 0.22, dr)) * cor;',
+    '  }',
     '',
     '  // ring: thin bright core; long soft glow outside, short glow inside',
     '  float wr = max(0.0038, uPx * 0.9);',
@@ -223,8 +253,9 @@
     '  col += corona * uLen.w * (1.0 - inside);',
     '  col += fil * uLen.z * lod * (1.0 - inside);',
     '  col += ring * uRing.x;',
+    '  col += motes(r, th) * uMotes.y * (1.0 - inside);',
     '  // a ripple mostly shows as a wave of light passing through the gas',
-    '  col += mix(uGlowA, uGlowB, 0.55) * rip * (0.03 + 2.4 * gas);',
+    '  col += mix(uGlowA, uGlowB, 0.55) * rip * (0.014 + 2.8 * gas);',
     '',
     '  // vignette',
     '  col *= 1.0 - 0.5 * smoothstep(0.8, 2.1, r);',
@@ -237,9 +268,9 @@
 
   // Per-quality budgets.
   var Q = {
-    saver:    { neb: 0.40, oct: 3 },
-    balanced: { neb: 0.50, oct: 4 },
-    high:     { neb: 0.55, oct: 5 }
+    saver:    { neb: 0.40, oct: 3, warp: 2 },
+    balanced: { neb: 0.44, oct: 4, warp: 2 },
+    high:     { neb: 0.50, oct: 5, warp: 3 }
   };
 
   // ───────────────────────── palette ─────────────────────────
@@ -281,12 +312,11 @@
     var vivid = c.filter(function (x) { return x.chroma > 0.06; });
     if (!vivid.length) {
       // Monochrome artwork: silver light, a faint cool nebula.
-      var g = c[0].l;
       return {
         deep: [0.020, 0.022, 0.030],
         neb1: [0.34, 0.36, 0.44], neb2: [0.44, 0.42, 0.46],
         glowA: [0.80, 0.80, 0.86], glowB: [0.95, 0.92, 0.86],
-        core: [1.0, 0.97, 0.93 + 0.0 * g]
+        core: [1.0, 0.97, 0.93]
       };
     }
     function score(x) { return x.chroma * (1.15 - Math.abs(x.l - 0.58)) * (1 - 0.06 * x.i); }
@@ -379,7 +409,7 @@
       var lastT = null;
       var act = 0;                     // 0 idle … 1 music
       var bassSm = 0, levelSm = 0, beatSm = 0, energySm = 0;
-      var rot = 0, nebT = 0;
+      var rot = 0, nebT = 0, flow = 0;
       var bands = new Float32Array(NUM_BANDS);     // displayed (0…1)
       var bandAvg = new Float32Array(NUM_BANDS);   // slow running average for self-normalising
       for (var i = 0; i < NUM_BANDS; i++) bandAvg[i] = 0.3;
@@ -413,7 +443,7 @@
         var f = i / (NUM_BANDS - 1);
         var n = noise.noise2D(i * 0.23 + flav.idle, T * 0.045);
         var wave = Math.sin(T * (Math.PI * 2 / BREATH_PERIOD) - f * 2.4 + flav.breath);
-        return U.clamp(0.20 + 0.12 * n + 0.07 * wave - 0.06 * f, 0, 1);
+        return U.clamp(0.25 + 0.13 * n + 0.08 * wave - 0.06 * f, 0, 1);
       }
 
       function step(t) {
@@ -429,10 +459,10 @@
         act += (target - act) * U.damp(0.7, dt);
 
         // smoothed scalars
-        bassSm += (a.bass - bassSm) * U.damp(a.bass > bassSm ? 9 : 3.5, dt);
+        bassSm += (a.bass - bassSm) * U.damp(a.bass > bassSm ? 6 : 3, dt);
         levelSm += (a.level - levelSm) * U.damp(2.0, dt);
         energySm += (a.energy - energySm) * U.damp(1.0, dt);
-        beatSm += (a.beat - beatSm) * U.damp(a.beat > beatSm ? 14 : 4, dt);
+        beatSm += (a.beat - beatSm) * U.damp(a.beat > beatSm ? 8 : 3, dt);
 
         // bands: extra smoothing, high-band tilt, gentle self-normalisation, blended with idle
         for (var i = 0; i < NUM_BANDS; i++) {
@@ -443,13 +473,14 @@
           var v = U.clamp(0.78 * raw + 0.22 * norm, 0, 1);
           var tgt = U.lerp(idleBand(i, T), v, act);
           if (first) bands[i] = tgt;
-          bands[i] += (tgt - bands[i]) * U.damp(tgt > bands[i] ? 11 : 3.2, dt);
+          bands[i] += (tgt - bands[i]) * U.damp(tgt > bands[i] ? 6.5 : 2.8, dt);
           bandBytes[i] = Math.round(U.clamp(bands[i], 0, 1) * 255);
         }
 
         // motion: slow rotation, faster (still slow) with energy
         rot += dt * (0.010 + 0.040 * energySm * act);
         nebT += dt * (0.55 + 1.6 * energySm * act);
+        flow += dt * (0.10 + 0.30 * energySm * act);
 
         // beat ripples
         if (a.beatCount !== lastBeatCount) {
@@ -493,7 +524,7 @@
           var bphase = (T + flav.breath) * (Math.PI * 2 / BREATH_PERIOD);
           var breath = Math.sin(bphase);
           var R0 = 0.30;
-          var R = R0 * (1 + 0.035 * breath * (1 - 0.6 * act) + act * (0.02 + 0.11 * U.clamp(bassSm, 0, 1)));
+          var R = R0 * (1 + 0.035 * breath * (1 - 0.6 * act) + act * (0.025 + 0.09 * U.clamp(bassSm, 0, 1)));
 
           // ripples: two deterministic idle ones (released at each breath peak), then beat ones
           ripData.fill(0);
@@ -522,6 +553,7 @@
             .set('uT', nebT + flav.timeOff * 0.5)
             .set('uRot', rot * 0.35 + flav.rot)
             .set('uOct', q.oct)
+            .set('uWarpOct', q.warp)
             .set('uSeed', flav.neb)
             .set('uNeb1', P.neb1)
             .set('uNeb2', P.neb2)
@@ -541,7 +573,7 @@
             .set('uRot', rot + flav.rot)
             .set('uR', R)
             .set('uLen', [0.035, 0.46, 0.55 * (0.85 + 0.25 * levelSm * act), 0.26])
-            .set('uRing', [0.9 * (1 + 0.12 * beatSm * act), 0.05, 1.1, 1.0])
+            .set('uRing', [0.9 * (1 + 0.08 * beatSm * act), 0.05, 1.1, 1.0])
             .set('uCurl', 0.42)
             .set('uOrder', 1)
             .set('uRip', ripData)
@@ -551,7 +583,8 @@
             .set('uCore', P.core)
             .set('uT', T)
             .set('uStarRot', rot * 0.35 + flav.rot)
-            .set('uSeed', [flav.fil, flav.fib, flav.stars[0], flav.stars[1]]);
+            .set('uSeed', [flav.fil, flav.fib, flav.stars[0], flav.stars[1]])
+            .set('uMotes', [flow + flav.idle, 0.9 * (0.6 + 0.4 * act)]);
           tri.draw();
         },
 

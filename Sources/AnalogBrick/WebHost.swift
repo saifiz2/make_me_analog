@@ -4,7 +4,14 @@ import UniformTypeIdentifiers
 
 protocol WebHostDelegate: AnyObject {
     /// A JS → native message (see docs/BRIDGE.md). `ready` is delivered too, after the host flips to ready.
+    /// On `ready` the delegate must send `init` plus the complete current state: nothing is buffered before it.
     func webHost(_ host: WebHost, didReceive type: String, payload: [String: Any])
+    /// The page could not be loaded or never became ready (after retries).
+    func webHostDidFail(_ host: WebHost, reason: String)
+}
+
+extension WebHostDelegate {
+    func webHostDidFail(_ host: WebHost, reason: String) {}
 }
 
 /// One WKWebView running a page of web/, plus its half of the bridge.
@@ -14,9 +21,12 @@ final class WebHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     weak var delegate: WebHostDelegate?
 
     private(set) var isReady = false
-    private var pending: [String] = []
+    private(set) var didFail = false
     private let url: URL
-    private var reloads = 0
+    private var attempts = 0
+    private var generation = 0
+    static let readyTimeout: TimeInterval = 20
+    static let maxAttempts = 4
 
     init(page: String, query: [URLQueryItem] = [], frame: NSRect, schemeHandler: BrickSchemeHandler) {
         self.page = page
@@ -48,30 +58,53 @@ final class WebHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         }
         webView.alphaValue = 0
         if #available(macOS 13.3, *) { webView.isInspectable = AppInfo.isDebug }
-        webView.load(URLRequest(url: url))
+        startLoad()
     }
 
-    /// Send a native → JS event. Events sent before the page is ready are queued
-    /// (unless `droppable`, used for high-rate streams like audio).
+    /// Load (or reload) the page and give it `readyTimeout` to say `ready`.
+    private func startLoad() {
+        guard !didFail else { return }
+        attempts += 1
+        generation += 1
+        let gen = generation
+        isReady = false
+        webView.load(URLRequest(url: url))
+        after(Self.readyTimeout) { [weak self] in
+            guard let self, self.generation == gen, !self.isReady else { return }
+            self.retryOrFail("page did not become ready within \(Int(Self.readyTimeout)) s")
+        }
+    }
+
+    private func retryOrFail(_ reason: String) {
+        guard !didFail, delegate != nil else { return }
+        if attempts < Self.maxAttempts {
+            Log.web.error("[\(self.page, privacy: .public)] \(reason, privacy: .public); retrying")
+            after(0.5) { [weak self] in self?.startLoad() }
+        } else {
+            didFail = true
+            Log.web.error("[\(self.page, privacy: .public)] giving up: \(reason, privacy: .public)")
+            delegate?.webHostDidFail(self, reason: reason)
+        }
+    }
+
+    /// Send a native → JS event. Events sent before the page is ready are dropped: on `ready` the delegate
+    /// sends `init` and the complete current state, so nothing stale is ever replayed.
     func send(_ type: String, _ payload: Any = [String: Any](), droppable: Bool = false) {
+        guard isReady else { return }
         guard let json = JSON.string(["type": type, "payload": payload]) else {
             Log.web.error("Unserialisable payload for \(type, privacy: .public)")
             return
         }
         let js = "window.Brick && window.Brick._receive(\(json));"
-        if isReady {
-            webView.evaluateJavaScript(js) { _, error in
-                if let error, !droppable { Log.web.error("evaluateJavaScript(\(type, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)") }
-            }
-        } else if !droppable {
-            pending.append(js)
+        webView.evaluateJavaScript(js) { _, error in
+            if let error, !droppable { Log.web.error("evaluateJavaScript(\(type, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)") }
         }
     }
 
     func teardown() {
         delegate = nil
         isReady = false
-        pending.removeAll()
+        generation += 1
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "brick")
@@ -94,9 +127,6 @@ final class WebHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 webView.animator().alphaValue = 1
             }
             delegate?.webHost(self, didReceive: type, payload: payload)
-            let queued = pending
-            pending.removeAll()
-            for js in queued { webView.evaluateJavaScript(js, completionHandler: nil) }
         case "log":
             let level = payload.string("level") ?? "info"
             let text = payload.string("message") ?? ""
@@ -119,22 +149,26 @@ final class WebHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         // The web process crashed (or was killed for memory). Reload; the page will send `ready` again.
-        Log.web.error("Web content process for \(self.page, privacy: .public) terminated; reloading")
         isReady = false
-        reloads += 1
-        guard reloads < 20 else { return }
-        after(0.5) { [weak self] in
-            guard let self else { return }
-            self.webView.load(URLRequest(url: self.url))
-        }
+        generation += 1
+        retryOrFail("web content process terminated")
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        Log.web.error("Navigation failed for \(self.page, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        navigationFailed(error)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        Log.web.error("Provisional navigation failed for \(self.page, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        navigationFailed(error)
+    }
+
+    private func navigationFailed(_ error: Error) {
+        let e = error as NSError
+        // Cancelled loads (our own reloads) and "frame load interrupted" are not failures.
+        if e.code == NSURLErrorCancelled || (e.domain == "WebKitErrorDomain" && e.code == 102) { return }
+        guard !isReady else { return }
+        generation += 1
+        retryOrFail("navigation failed: \(e.localizedDescription)")
     }
 }
 

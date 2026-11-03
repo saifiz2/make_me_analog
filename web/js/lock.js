@@ -173,7 +173,7 @@
   }, 1500);
 
   // ───────────────────────────── countdown ─────────────────────────────
-  var lastClock = '';
+  var lastClock = '', lastSessionTf = '';
   function updateCountdown(now) {
     var s = S.session;
     if (!s) return;
@@ -186,8 +186,8 @@
       $clock.classList.toggle('is-long', txt.length > 5);
     }
     var dur = s.durationMs || (s.endsAt - s.startedAt) || 1;
-    var frac = clamp((now - s.startedAt) / dur, 0, 1);
-    $sessionFill.style.transform = 'scaleX(' + frac.toFixed(5) + ')';
+    var tf = 'scaleX(' + clamp((now - s.startedAt) / dur, 0, 1).toFixed(4) + ')';
+    if (tf !== lastSessionTf) { lastSessionTf = tf; $sessionFill.style.transform = tf; }
     if (remaining <= 0 && !S.timeUp) {
       // Never end locally: show 00:00 and wait for native's 'ending'.
       S.timeUp = true;
@@ -234,15 +234,19 @@
     return clamp(pos, 0, sp.track.durationMs || 0);
   }
 
-  var lastPosText = '';
+  var lastPosText = '', lastTrackTf = '';
   function updateTrackProgress(now) {
     var sp = S.spotify;
     if (!sp || !sp.track) return;
     var dur = sp.track.durationMs || 0;
     var pos = trackPosition(now);
     var f = dur > 0 ? pos / dur : 0;
-    $trackFill.style.transform = 'scaleX(' + f.toFixed(5) + ')';
-    $trackKnob.style.left = (f * 100).toFixed(3) + '%';
+    var tf = 'scaleX(' + f.toFixed(4) + ')';
+    if (tf !== lastTrackTf) {
+      lastTrackTf = tf;
+      $trackFill.style.transform = tf;
+      $trackKnob.style.left = (f * 100).toFixed(2) + '%';
+    }
     var t = fmtTime(pos);
     if (t !== lastPosText) { lastPosText = t; $tPos.textContent = t; }
   }
@@ -457,6 +461,7 @@
     return clamp((e.clientX - r.left) / Math.max(1, r.width), 0, 1);
   }
   function previewSeek(f) {
+    lastTrackTf = '';
     $trackFill.style.transform = 'scaleX(' + f.toFixed(5) + ')';
     $trackKnob.style.left = (f * 100).toFixed(3) + '%';
     if (S.spotify && S.spotify.track) $tPos.textContent = fmtTime(f * S.spotify.track.durationMs);
@@ -664,6 +669,9 @@
     $slots.classList.add('nudge');
   }
 
+  var NBSP = '\u00a0';
+  function mins(n) { return U.formatMinutesLong(n).replace(/ /g, NBSP); }
+
   function confirmCopy(step, u) {
     var now = Date.now(), s = S.session;
     var remainingMin = s ? Math.max(1, Math.ceil((s.endsAt - now) / 60000)) : 0;
@@ -673,7 +681,7 @@
     if (step <= 1 && !last) {
       return {
         title: 'Are you sure?',
-        body: s ? U.formatMinutesLong(remainingMin) + ' of your ' + U.formatMinutesLong(durationMin) +
+        body: s ? mins(remainingMin) + ' of your ' + mins(durationMin) +
           ' session left. The notebook is right there.' : 'The notebook is right there.'
       };
     }
@@ -681,8 +689,8 @@
       return { title: 'Still sure?', body: 'Second ask. Nothing on this screen matters more than the page in front of you.' };
     }
     return {
-      title: 'Last ask. End the session now?',
-      body: 'Unlocking ends this session early.' + (focusedMin >= 1 ? ' The ' + U.formatMinutesLong(focusedMin) +
+      title: 'Last ask.\nEnd the session now?',
+      body: 'Unlocking ends this session early.' + (focusedMin >= 1 ? ' The ' + mins(focusedMin) +
         ' you’ve already focused still count.' : '')
     };
   }
@@ -694,11 +702,11 @@
     $sureBtn.disabled = true;
     $sureBtn.classList.remove('is-ready');
     $sureFill.style.transition = 'none';
-    $sureFill.style.transform = 'scaleX(0)';
+    $sureFill.style.webkitClipPath = $sureFill.style.clipPath = 'inset(0 100% 0 0 round 1rem)';
     void $sureFill.offsetWidth;
     if (delay > 0) {
-      $sureFill.style.transition = 'transform ' + delay + 'ms linear';
-      $sureFill.style.transform = 'scaleX(1)';
+      $sureFill.style.transition = '-webkit-clip-path ' + delay + 'ms linear, clip-path ' + delay + 'ms linear';
+      $sureFill.style.webkitClipPath = $sureFill.style.clipPath = 'inset(0 0 0 0 round 1rem)';
     }
     S.confirmTimer = setTimeout(function () {
       if (S.unlock.stage !== 'confirm') return;
@@ -740,7 +748,7 @@
         S.confirmKey = key;
         S.entry = '';
         startConfirmWait(u);
-        setTimeout(function () { if (S.unlock.stage === 'confirm') $keepBtn.focus({ preventScroll: true }); }, 30);
+        $keepBtn.focus({ preventScroll: true });
       }
     } else {
       S.confirmKey = '';
@@ -748,7 +756,7 @@
 
     if (st === 'cooldown') {
       updateCooldown(Date.now());
-      setTimeout(function () { if (S.unlock.stage === 'cooldown') $backBtn.focus({ preventScroll: true }); }, 30);
+      $backBtn.focus({ preventScroll: true });
     }
     if (st === 'unlocked') {
       $card.focus({ preventScroll: true });
@@ -908,7 +916,23 @@
       if (doc.activeElement && doc.activeElement !== body && !$modal.contains(doc.activeElement)) doc.activeElement.blur();
     }
   }
-  U.idleWatcher(6000, function () { setIdle(true); }, function () { setIdle(false); });
+  // Like BrickUtil.idleWatcher, but ignores mousemoves that didn't move: WebKit can send synthetic
+  // "fake" mousemoves (layout/scroll changes under a resting cursor), which would keep the HUD awake.
+  (function watchIdle(ms) {
+    var timer = null, lastX = null, lastY = null;
+    function arm() { clearTimeout(timer); timer = setTimeout(function () { setIdle(true); }, ms); }
+    function activity() { if (S.idle) setIdle(false); arm(); }
+    global.addEventListener('mousemove', function (e) {
+      if (e.screenX === lastX && e.screenY === lastY) return;
+      var first = lastX === null;
+      lastX = e.screenX; lastY = e.screenY;
+      if (!first || !S.idle) activity();
+    }, { passive: true, capture: true });
+    ['mousedown', 'keydown', 'wheel', 'touchstart'].forEach(function (t) {
+      global.addEventListener(t, activity, { passive: true, capture: true });
+    });
+    arm();
+  })(6000);
 
   // Mouse clicks shouldn't leave buttons focused (Space is play/pause, not "press the last button").
   doc.addEventListener('pointerup', function (e) {
@@ -918,6 +942,7 @@
   doc.addEventListener('click', function (e) {
     if (popOpen && !$pop.contains(e.target) && !$playlistsBtn.contains(e.target)) closePopover();
   });
+  global.addEventListener('resize', closePopover);
 
   // ───────────────────────────── keyboard ─────────────────────────────
   doc.addEventListener('keydown', function (e) {
@@ -1021,17 +1046,18 @@
   Brick.on('ending', onEnding);
 
   // ───────────────────────────── tick ─────────────────────────────
+  // 4 Hz is plenty: the countdown changes once a second and a 3px track bar moves < 2 px/s.
+  // Driven by rAF so nothing runs while the page is hidden; DOM writes only happen when values change.
   var lastSlow = 0;
   function tick() {
     requestAnimationFrame(tick);
     var now = Date.now();
-    if (now - lastSlow >= 200) {
-      lastSlow = now;
-      updateCountdown(now);
-      updatePeek(now);
-      updateCooldown(now);
-      updateUnlockLink(now);
-    }
+    if (now - lastSlow < 250) return;
+    lastSlow = now;
+    updateCountdown(now);
+    updatePeek(now);
+    updateCooldown(now);
+    updateUnlockLink(now);
     if (!S.idle && !seeking && S.view === 'track' && S.role === 'primary' && !S.ending) updateTrackProgress(now);
   }
   requestAnimationFrame(tick);
