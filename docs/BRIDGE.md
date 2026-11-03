@@ -69,7 +69,7 @@ Secondary displays show the visual and, if enabled, a quiet timer.
     "quickPlaylists": [ { "name": "Deep Focus", "uri": "spotify:playlist:37i9dQZF1DWZeKCadgRdKQ" } ],
     "breathPattern": "box"            // box | coherent | relax (used by the Breath mode)
   },
-  "gallery": { "images": ["brick://gallery/0", "brick://gallery/1"] }  // [] if no folder chosen
+  "gallery": { "images": ["brick://gallery/0", "brick://gallery/1"] }  // all images (≤300), full size; [] if no folder chosen. brick://gallery/<n>[?size=<px>]
 }
 ```
 
@@ -78,7 +78,7 @@ Secondary displays show the visual and, if enabled, a quiet timer.
 {
   "installed": true,
   "running": true,
-  "permission": "granted",   // granted | denied | undetermined | unknown
+  "permission": "granted",   // granted | denied | undetermined | unknown (only 'granted' means commands will work)
   "state": "playing",        // playing | paused | stopped
   "track": {                 // null when nothing is loaded
     "id": "spotify:track:…",
@@ -204,13 +204,13 @@ The normal app window used to configure and start a session.
     "todayMs": 5400000, "weekMs": 22200000, "streakDays": 3, "totalSessions": 41,
     "recent": [ { "startedAt": 1762100000000, "plannedMs": 3000000, "focusedMs": 3000000, "completed": true } ]
   },
-  "gallery": { "folder": "/Users/me/Pictures/Calm", "count": 24, "images": ["brick://gallery/0"] }  // folder null when unset; images = first ≤12
+  "gallery": { "folder": "/Users/me/Pictures/Calm", "count": 24, "images": ["brick://gallery/0?size=480"] }  // folder null when unset; images = first ≤12, 480 px thumbnails
 }
 ```
 
 #### `status` — same shape as `init.status`, sent after `status.refresh` or a permission change
-#### `settings` — same shape as `init.settings`, sent after native normalises a save
-#### `stats` — same shape as `init.stats`, sent when a session ends
+#### `settings` — same shape as `init.settings`, sent after native normalises a save and whenever the window is presented
+#### `stats` — same shape as `init.stats`, sent whenever the window is presented (e.g. after a session). `recent` always covers at least the last 7 days.
 #### `gallery` — same shape as `init.gallery`
 #### `error` — `{ "message": "PIN must be 4–8 digits." }` (e.g. `session.start` rejected)
 
@@ -220,7 +220,7 @@ The normal app window used to configure and start a session.
 |---|---|---|
 | `ready` | `{page:"setup"}` | |
 | `settings.save` | partial settings object | persisted immediately; native replies with `settings` |
-| `session.start` | `{durationMin, pin, mode, intention}` | PIN: 4–8 digits. Duration: 1–480 min. Other options come from saved settings. On success the setup window hides and the lock starts. |
+| `session.start` | `{durationMin, pin, mode, intention}` | PIN: 4–8 digits. Duration: 1–480 min (native accepts 1; the setup UI offers 5–480). Other options come from saved settings. On success the setup window hides and the lock starts. |
 | `status.refresh` | `{}` | re-check Focus shortcuts, Spotify, permissions |
 | `focus.openShortcuts` | `{}` | open the Shortcuts app |
 | `focus.test` | `{}` | run the On shortcut, wait 3 s, run Off |

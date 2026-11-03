@@ -65,7 +65,7 @@ final class LockController: NSObject, WebHostDelegate {
     private var ending = false
     private var tornDown = false
     private var endingPayload: [String: Any] = [:]
-    private var audioStatus: [String: Any] = ["available": false, "reason": "permission"]
+    private var audioStatus: [String: Any] = ["available": false, "reason": AudioCapture.hasPermission ? "spotify-not-running" : "permission"]
     private var autoplayed = false
     private var lastReassert = Date.distantPast
     private var pendingScreenRebuild: DispatchWorkItem?

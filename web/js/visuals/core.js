@@ -72,6 +72,7 @@
  *   stage.setPlaying(true);                           // from the bridge 'spotify' event
  *   stage.setPalette(['#223344', …]);                 // from the bridge 'artwork' event ([] resets)
  *   stage.setOptions({ images: [...] });               // merged into env.options
+ *   stage.setOptions({ audioCapture: true });          // native capture works: silence is real, don't synthesise
  *   stage.pause(); stage.resume(); stage.destroy();
  *   stage.mode  → current mode id
  *   stage.fps   → measured frames per second
@@ -783,7 +784,8 @@
     var a = this.audio, tgt = this._audioTarget;
     var now = performance.now();
     a.available = now - this._lastAudioFrameAt < 1000;
-    a.synthetic = !a.available && a.playing;
+    // Synthesise only when Spotify plays but we can't hear it (no permission / capture down).
+    a.synthetic = !a.available && a.playing && !this.options.audioCapture;
     if (a.synthetic) {
       if (this._synth(this._time, tgt)) this._triggerBeat();
     } else if (!a.available) {

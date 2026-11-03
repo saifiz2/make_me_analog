@@ -76,8 +76,8 @@
   var quickPlaylists = [
     { name: 'Deep Focus', uri: 'spotify:playlist:37i9dQZF1DWZeKCadgRdKQ' },
     { name: 'Peaceful Piano', uri: 'spotify:playlist:37i9dQZF1DX4sWSpwq3LiO' },
-    { name: 'Rain on the Window', uri: 'spotify:playlist:mock-rain-window' },
-    { name: 'Lo-fi for Notebooks', uri: 'spotify:playlist:mock-lofi-notebooks' }
+    { name: 'Rain on the Window', uri: 'spotify:playlist:mockRainWindow' },
+    { name: 'Lo-fi for Notebooks', uri: 'spotify:playlist:mockLofiNotebooks' }
   ];
 
   var settings = {
@@ -268,6 +268,8 @@
         break;
       case 'playUri':
         var u = String(p.value || '');
+        // Native only plays canonical spotify:<type>:<alphanumeric id> URIs.
+        if (!/^spotify:(playlist|album|track|artist|show|episode):[A-Za-z0-9]{1,64}$/.test(u)) { note('spotify.command', p, 'ignored: invalid URI'); return; }
         var idx = u ? seedHue(u) % TRACKS.length : 0;
         loadTrack(idx); sp.state = 'playing';
         break;
@@ -333,7 +335,7 @@
   }
   function toIdle() { U.stage = 'idle'; U.step = 1; U.error = null; U.cooldownUntil = null; armInactivity(); }
   function toCooldown(ms) {
-    U.stage = 'cooldown'; U.step = 1; U.error = null;
+    U.stage = 'cooldown'; U.step = 1;
     U.cooldownUntil = Date.now() + ms;
     clearTimeout(cooldownTimer);
     cooldownTimer = setTimeout(function () { U.wrongAttempts = 0; toIdle(); sendUnlock(); }, ms);
@@ -357,6 +359,7 @@
       confirmEnteredAt = Date.now();
     } else {
       U.wrongAttempts++;
+      U.error = 'wrong-pin';   // native keeps this even when the cooldown starts
       note('unlock.submit', { pin: '•'.repeat(pin.length) }, 'wrong PIN (' + U.wrongAttempts + ' in a row)');
       if (U.wrongAttempts >= MAX_WRONG) {
         var ms = Math.min(COOLDOWN_MAX, COOLDOWN_BASE * Math.pow(2, cooldowns));

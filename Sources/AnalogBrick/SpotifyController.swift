@@ -49,9 +49,16 @@ final class SpotifyController {
     func permission() -> Permission {
         if let cached = permissionCache, Date().timeIntervalSince(cached.1) < 5 { return cached.0 }
         let p = Self.determinePermission(ask: false)
-        if p != .unknown { permissionCache = (p, Date()) }
-        return p
+        if p != .unknown {
+            permissionCache = (p, Date())
+            UserDefaults.standard.set(p.rawValue, forKey: Self.permissionKey)
+            return p
+        }
+        // macOS can only answer while Spotify is running; otherwise report the last definite answer.
+        return UserDefaults.standard.string(forKey: Self.permissionKey).flatMap(Permission.init(rawValue:)) ?? .unknown
     }
+
+    private static let permissionKey = "spotifyAutomationPermission"
 
     /// Ask for Automation permission (shows the system prompt). Spotify must be running.
     /// Blocks while the prompt is up, so this runs off the main thread.
@@ -61,6 +68,7 @@ final class SpotifyController {
                 let p = Self.determinePermission(ask: true)
                 DispatchQueue.main.async {
                     self.permissionCache = (p, Date())
+                    if p != .unknown { UserDefaults.standard.set(p.rawValue, forKey: Self.permissionKey) }
                     completion(p)
                 }
             }

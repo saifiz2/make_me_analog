@@ -58,6 +58,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate, WebHost
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(host.webView)
         refreshStatus()
+        host.send("settings", store.settings.payload())   // e.g. a mode chosen on the lock screen
         host.send("stats", store.stats().payload())
     }
 

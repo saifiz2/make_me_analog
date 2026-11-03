@@ -1426,6 +1426,7 @@
     // Stats arrive when a session ends and the window comes back: never keep that session's PIN around.
     // (They also arrive when the window is merely re-presented; a PIN being typed then is left alone.)
     if (S.startSent) {
+      S.startSent = false;
       S.startPending = false;
       S.busy = false;
       clearPins();

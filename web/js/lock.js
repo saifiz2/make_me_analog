@@ -144,7 +144,7 @@
   var stage = null, stageSeed = null;
 
   function stageOptions() {
-    return { breathPattern: S.settings.breathPattern || 'box', images: S.images || [] };
+    return { breathPattern: S.settings.breathPattern || 'box', images: S.images || [], audioCapture: !!(S.audioStatus && S.audioStatus.available) };
   }
 
   function mountStage(mode, transition) {
@@ -208,14 +208,14 @@
 
   // ───────────────────────────── Spotify ─────────────────────────────
   function controllable(sp) {
-    return !!(sp && sp.installed && sp.running && sp.permission !== 'denied' && sp.permission !== 'undetermined');
+    return !!(sp && sp.installed && sp.running && sp.permission === 'granted');
   }
 
   function spotifyView(sp) {
     if (!sp) return 'loading';
     if (!sp.installed) return 'notinstalled';
     if (!sp.running) return 'notrunning';
-    if (sp.permission === 'denied' || sp.permission === 'undetermined') return 'noperm';
+    if (sp.permission !== 'granted') return 'noperm';
     if (!sp.track) return 'empty';
     return 'track';
   }
@@ -1030,7 +1030,11 @@
   });
 
   Brick.on('audio', function (p) { if (stage && p) stage.setAudioFrame(p); });
-  Brick.on('audioStatus', function (p) { S.audioStatus = p || null; });
+  Brick.on('audioStatus', function (p) {
+    S.audioStatus = p || null;
+    // While real capture works, quiet passages are real silence, not a reason to synthesise beats.
+    if (stage) stage.setOptions({ audioCapture: !!(p && p.available) });
+  });
   Brick.on('unlock', onUnlock);
 
   Brick.on('peek', function (p) {

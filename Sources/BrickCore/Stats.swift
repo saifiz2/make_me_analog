@@ -65,7 +65,10 @@ public enum StatsCalculator {
             cursor = prev
         }
 
-        let recent = Array(log.sorted { $0.startedAt > $1.startedAt }.prefix(recentLimit))
+        // Never cut inside the 7-day window: the setup screen's sparkline is built from `recent`.
+        let sorted = log.sorted { $0.startedAt > $1.startedAt }
+        let inWeek = sorted.prefix(while: { $0.startedAt >= weekStart }).count
+        let recent = Array(sorted.prefix(max(recentLimit, inWeek)))
         return StatsSummary(todayMs: today, weekMs: week, streakDays: streak, totalSessions: log.count, recent: recent)
     }
 }
