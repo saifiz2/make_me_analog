@@ -705,6 +705,7 @@
 
       function allocTargets() {
         freeTarget(glowA); freeTarget(glowB);
+        // options.driftLowPrecision (dev/testing only) forces the 8-bit fallback path.
         acc = makeTarget(W, H, !options.driftLowPrecision, false);
         accAlt = acc.hdr ? null : makeTarget(W, H, false, false);
         // 8-bit storage clips at 1.0: store at reduced scale and compensate when composing.

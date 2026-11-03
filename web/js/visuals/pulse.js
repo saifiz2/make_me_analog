@@ -464,13 +464,14 @@
         return T;
       }
 
-      function rippleSlot(idx, age, amp, R) {
+      function rippleSlot(idx, age, amp, R, px) {
         var x = U.clamp(age / RIPPLE_LIFE, 0, 1);
         var rad = R + 0.30 * age * (1 - 0.32 * x);
         var a = amp * (1 - x) * (1 - x) * U.smoothstep(0, 0.06, x);
+        var w = 0.008 + 0.032 * x, wPx = Math.max(w, 1.5 * px);   // never thinner than ~1.5 px
         ripData[idx * 4] = rad;
-        ripData[idx * 4 + 1] = a / (0.6 + rad);
-        ripData[idx * 4 + 2] = 0.008 + 0.032 * x;
+        ripData[idx * 4 + 1] = a / (0.6 + rad) * (w / wPx);
+        ripData[idx * 4 + 2] = wPx;
         ripData[idx * 4 + 3] = 0;
       }
 
@@ -499,10 +500,10 @@
           for (var s = 0; s < MAX_RIPPLES; s++) ripData[s * 4 + 2] = 1;
           var since = ((bphase - Math.PI / 2) / (Math.PI * 2)) * BREATH_PERIOD;
           var age0 = ((since % BREATH_PERIOD) + BREATH_PERIOD) % BREATH_PERIOD;
-          rippleSlot(0, age0, 0.45 * (1 - act), R0 * 1.035);
-          rippleSlot(1, age0 + BREATH_PERIOD, 0.45 * (1 - act), R0 * 1.035);
+          rippleSlot(0, age0, 0.45 * (1 - act), R0 * 1.035, px);
+          rippleSlot(1, age0 + BREATH_PERIOD, 0.45 * (1 - act), R0 * 1.035, px);
           for (var k = 0; k < ripples.length && k < MAX_RIPPLES - 2; k++) {
-            rippleSlot(2 + k, t - ripples[k].born, ripples[k].amp, R);
+            rippleSlot(2 + k, t - ripples[k].born, ripples[k].amp, R, px);
           }
 
           gl.disable(gl.BLEND);
