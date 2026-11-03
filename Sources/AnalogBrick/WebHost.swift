@@ -42,6 +42,8 @@ final class WebHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         config.suppressesIncrementalRendering = false
         config.mediaTypesRequiringUserActionForPlayback = []
         config.preferences.isElementFullscreenEnabled = false
+        // Let Tab reach buttons and links, not just text fields (WebKit's macOS default).
+        config.preferences.tabFocusesLinks = true
         config.websiteDataStore = .nonPersistent()
 
         webView = BrickWebView(frame: frame, configuration: config)

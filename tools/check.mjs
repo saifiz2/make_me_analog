@@ -135,7 +135,7 @@ async function checkPages() {
 // ───────────────────────── 3. the unlock ritual ─────────────────────────
 async function checkUnlock() {
   console.log('Unlock ritual (via the lock UI and its mock)');
-  const { page, errors } = await openPage('lock.html?minutes=25&elapsed=3&pin=2468');
+  const { page, errors } = await openPage('lock.html?minutes=25&elapsed=3&pin=2468&quality=saver&mode=breath');
   await page.evaluate(() => {
     window.__unlockLog = [];
     window.__ending = null;
@@ -171,21 +171,31 @@ async function checkUnlock() {
 
   for (let step = 1; step <= 3; step++) {
     await page.waitForTimeout(400);
+    // Arm an in-page probe: the instant the confirm stage arrives, try to confirm early.
+    await page.evaluate((st) => {
+      window.__early = null;
+      const off = Brick.on('unlock', (u) => {
+        if (u.stage === 'confirm' && u.step === st && window.__early === null) {
+          window.__early = { sentAt: Date.now() };
+          Brick.send('unlock.confirm', {});
+          off();
+        }
+      });
+    }, step);
     await page.keyboard.type('2468', { delay: 40 });
     s = await waitFor((x) => x.stage === 'confirm' && x.step === step);
     if (!s) { fail(`unlock step ${step}`, 'PIN did not lead to confirm'); break; }
-    await page.screenshot({ path: path.join(OUT, `unlock-confirm-${step}.png`) });
-    // Too early: the native side (mock) must refuse.
-    await page.evaluate(() => Brick.send('unlock.confirm', {}));
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(400);
     const still = await last();
-    if (still.stage !== 'confirm' || still.step !== step) fail(`unlock step ${step}`, 'confirm accepted before the delay');
+    if (still.stage !== 'confirm' || still.step !== step) fail(`unlock step ${step}`, 'confirm accepted before the delay: ' + JSON.stringify(still));
     else pass(`step ${step}: early confirm refused`);
+    await page.screenshot({ path: path.join(OUT, `unlock-confirm-${step}.png`) });
     await page.waitForTimeout(s.confirmDelayMs + 200);
-    // Click the real "I'm sure" button if we can find it, otherwise use the bridge.
+    // Click the real "Yes, I'm sure" button if we can find it, otherwise use the bridge.
     const clicked = await page.evaluate(() => {
+      const visible = (b) => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(b).visibility !== 'hidden'; };
       const btn = Array.from(document.querySelectorAll('button')).find((b) =>
-        b.offsetParent !== null && !b.disabled && /sure|unlock/i.test(b.textContent) && !/keep|stay|back/i.test(b.textContent));
+        visible(b) && !b.disabled && /sure|unlock/i.test(b.textContent) && !/keep|stay|back|early/i.test(b.textContent));
       if (btn) { btn.click(); return true; }
       return false;
     });
@@ -196,7 +206,7 @@ async function checkUnlock() {
       pass(`step ${step} confirmed${clicked ? ' (button)' : ' (bridge)'}`);
     } else {
       s = await waitFor((x) => x.stage === 'unlocked');
-      if (!s) fail('unlock', 'never unlocked'); else pass('unlocked after 3 PINs + 3 confirmations');
+      if (!s) fail('unlock', 'never unlocked'); else pass(`unlocked after 3 PINs + 3 confirmations${clicked ? ' (button)' : ' (bridge)'}`);
     }
   }
   await page.waitForTimeout(2000);
