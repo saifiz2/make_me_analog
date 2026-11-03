@@ -10,12 +10,15 @@
  *   • clock       the breathing phase comes from the WALL CLOCK (Date.now()), so every
  *                 display — each running its own stage — breathes in step. A pattern
  *                 change blends over ~2 s instead of jumping.
- *   • orb         a pearl-like sphere of light: luminous body, warm inner glow, gentle
- *                 limb brightening, and slow 3D noise "shimmer" mapped onto the sphere
- *                 (a little livelier during holds). Size eases (easeInOutSine) between
- *                 22 % and 38 % of min(viewport) in diameter.
+ *   • orb         a pearl-like sphere of light: near-white inner glow → pale tinted body →
+ *                 saturated limb, slow 3D noise "shimmer" wrapped on the sphere plus an
+ *                 inner fog layer turning the other way (a little livelier during holds).
+ *                 Size eases (easeInOutSine) between 22 % and 38 % of min(viewport) in
+ *                 diameter; it also brightens slightly as it fills.
  *   • halo        three-term falloff from the orb's edge, scattered through a faint,
  *                 slowly drifting mist that also textures the background.
+ *   • guide ring  hairline at the full-inhale radius, lit a little more as the orb nears
+ *                 it, dissolving into the orb's edge at full inhale.
  *   • background  deep gradient pooled around the orb; its hue drifts over minutes,
  *                 dusk blue ↔ plum ↔ dusk blue ↔ deep teal (also wall-clock driven).
  *   • overlay     DOM: the phase word (serif italic, lowercase, letter-spaced, low contrast,
@@ -28,7 +31,13 @@
  * Frozen stages (setup thumbnails) render a fixed, representative moment: most of the way
  * through an inhale, in dusk blue.
  *
- * Single WebGL1 pass (GLSL ES 1.00), linear light → tonemap → sRGB → triangular dither.
+ * Passes (WebGL1, GLSL ES 1.00): 1. mist → quarter-res RGBA8 (it is very low-frequency)
+ *                                2. composite at canvas resolution: linear light → tonemap →
+ *                                   sRGB → triangular dither (no banding in the dark gradients)
+ *                                3. the same composite plus the orb, scissored to the orb.
+ *
+ * Previews that run the stage faster than real time (preview.html?warp=N) fast-forward the
+ * wall clock too, so the slow colour drift can be checked; at normal speed it is Date.now().
  */
 (function (global) {
   'use strict';
@@ -149,7 +158,10 @@
     '}'
   ].join('\n');
 
-  // Pass 2 — composite at canvas resolution.
+  // Pass 2 — composite at canvas resolution. Compiled twice: without ORB for the whole
+  // canvas, and with ORB for a scissor box around the orb (same background maths, so no
+  // seam). Keeping the orb's noise out of the full-screen shader matters on GPUs/software
+  // renderers that execute both sides of a branch.
   var FS = [
     'varying vec2 v_uv;',
     'uniform sampler2D uMist;',
@@ -195,8 +207,9 @@
     '  ring *= ring * min(1.0, 0.7 * uPr / sig);',
     '  col += mix(uHalo, uCore, 0.3) * ring * uB.w * (0.6 + 0.8 * mv);',
     '',
-    '  // ── the orb ──',
-    '  float aa = max(max(1.0, R * 0.011), min(1.5 * uPr, R * 0.03)) / R;   // edge softness',
+    '  // ── the orb (only compiled into the scissored orb pass) ──',
+    '#ifdef ORB',
+    '  float aa = max(max(1.0, R * 0.011), min(1.5 * uPr, R * 0.03)) / R;   // edge softness (px → orb units)',
     '  float r = dist / R;',
     '  if (r < 1.0 + 2.0 * aa) {',
     '    vec2 q = d / R;',
@@ -219,7 +232,7 @@
     '    // holds: a finer, slightly livelier shimmer fades in',
     '    float hs = uB.y > 0.001 ? snoise(n * 4.2 + vec3(uT * 0.16, -uT * 0.12, uSeed.w)) : 0.0;',
     '    float shimmer = 1.0 + 0.085 * sn + 0.04 * uB.y * hs;',
-    '    // warm core → pale tinted body → saturated limb; the fog nudges the colour warmer/cooler',
+    '    // bright core → pale tinted body → saturated limb; the inner fog nudges the ramp',
     '    float rt = clamp(r + 0.12 * fog * (1.0 - r * r), 0.0, 1.0);',
     '    vec3 tint = mix(uCore, uOrb, smoothstep(0.0, 0.85, rt));',
     '    tint = mix(tint, uHalo, 0.72 * smoothstep(0.5, 1.0, rt));',
@@ -235,6 +248,7 @@
     '    float cov = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, r);',
     '    col = mix(col, c + uHalo * 0.16 * uB.z, cov);',
     '  }',
+    '#endif',
     '',
     '  // ── gentle vignette ──',
     '  vec2 uv = fc / uRes - 0.5;',
@@ -293,7 +307,8 @@
           var defs = '#define MIST_OCT ' + Q[q].mist + '\n#define SURF_OCT ' + Q[q].surf + '\n';
           programs[q] = {
             mist: G.createProgram(gl, G.FULLSCREEN_VS, HEADER + defs + lib + MIST_FS),
-            comp: G.createProgram(gl, G.FULLSCREEN_VS, HEADER + defs + lib + FS)
+            comp: G.createProgram(gl, G.FULLSCREEN_VS, HEADER + defs + lib + FS),
+            orb: G.createProgram(gl, G.FULLSCREEN_VS, HEADER + defs + '#define ORB 1\n' + lib + FS)
           };
         }
         return programs[q];
@@ -412,16 +427,23 @@
 
       // ── time ──
       var lastT = null, perfLast = null, warpExtra = 0;
+      var winDt = 0, winReal = 0, warpOn = false;
       var curKey = null, prevKey = null, blendStart = 0;
       var started = false;
 
       function clockMs(t, dt, frozen) {
         var pnow = (global.performance && performance.now) ? performance.now() : Date.now();
         // Previews may run the stage faster than real time (timeScale): follow that, so a
-        // warped preview shows the long-term evolution. At timeScale 1 this stays 0.
+        // warped preview shows the long-term evolution. It only engages when stage time has
+        // clearly outpaced real time over a whole second, so at timeScale 1 frame jitter can
+        // never nudge the clock and every display stays on plain Date.now().
         if (!frozen && perfLast !== null) {
           var real = (pnow - perfLast) / 1000;
-          if (real > 0 && real < 0.25 && dt > real * 1.5) warpExtra += (dt - real) * 1000;
+          if (real > 0 && real < 0.25) {
+            winDt += dt; winReal += real;
+            if (winReal >= 1) { warpOn = winDt / winReal > 1.5; winDt = winReal = 0; }
+            if (warpOn) warpExtra += Math.max(0, dt - real) * 1000;
+          }
         }
         perfLast = pnow;
         return Date.now() + warpExtra;
@@ -512,22 +534,36 @@
           gl.viewport(0, 0, w, h);
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, mistRT.texture);
-          P.comp.use()
-            .set('uMist', 0)
-            .set('uRes', [w, h])
-            .set('uC', [cx, cy])
-            .set('uR', [R, m * R_MAX, m])
-            .set('uPr', env.pixelRatio)
-            .set('uT', t + timeOff)
-            .set('uSeed', seed)
-            .set('uB', [full, hold, bright, ringLight])
-            .set('uDeep', th.deep)
-            .set('uMid', th.mid)
-            .set('uHaze', th.haze)
-            .set('uOrb', th.orb)
-            .set('uHalo', th.halo)
-            .set('uCore', th.core);
-          tri.draw();
+          function composite(prog) {
+            prog.use()
+              .set('uMist', 0)
+              .set('uRes', [w, h])
+              .set('uC', [cx, cy])
+              .set('uR', [R, m * R_MAX, m])
+              .set('uPr', env.pixelRatio)
+              .set('uT', t + timeOff)
+              .set('uSeed', seed)
+              .set('uB', [full, hold, bright, ringLight])
+              .set('uDeep', th.deep)
+              .set('uMid', th.mid)
+              .set('uHaze', th.haze)
+              .set('uOrb', th.orb)
+              .set('uHalo', th.halo)
+              .set('uCore', th.core);
+            tri.draw();
+          }
+          composite(P.comp);
+          // the orb, redrawn over the same background inside a box just around it
+          var soft = Math.max(Math.max(1, R * 0.011), Math.min(1.5 * env.pixelRatio, R * 0.03));
+          var rb = R + 2 * soft + 2;
+          var x0 = Math.max(0, Math.floor(cx - rb)), y0 = Math.max(0, Math.floor(cy - rb));
+          var x1 = Math.min(w, Math.ceil(cx + rb)), y1 = Math.min(h, Math.ceil(cy + rb));
+          if (x1 > x0 && y1 > y0) {
+            gl.enable(gl.SCISSOR_TEST);
+            gl.scissor(x0, y0, x1 - x0, y1 - y0);
+            composite(P.orb);
+            gl.disable(gl.SCISSOR_TEST);
+          }
 
           // ── overlay ──
           if (!uiHidden) {
@@ -538,7 +574,7 @@
         },
 
         destroy: function () {
-          Object.keys(programs).forEach(function (q) { programs[q].mist.destroy(); programs[q].comp.destroy(); });
+          Object.keys(programs).forEach(function (q) { programs[q].mist.destroy(); programs[q].comp.destroy(); programs[q].orb.destroy(); });
           programs = {};
           if (mistRT) { mistRT.destroy(); mistRT = null; }
           tri.destroy();

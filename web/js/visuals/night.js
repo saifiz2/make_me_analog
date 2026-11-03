@@ -19,19 +19,21 @@
  *      • Foreground — far ridge, wooded hills and a lone tree, analytic coverage, stored as a
  *        premultiplied screen-fixed texture covering the bottom FG_FRAC of the canvas.
  *   1. one full-screen pass per frame: sky gradient + airglow (screen-fixed), the rotated
- *      Milky Way lookup, five star layers, the occasional meteor, foreground, tonemap,
- *      gamma, triangular dither.
+ *      Milky Way lookup, five star layers, the occasional meteor (every 40–90 s, faint,
+ *      about a second long), foreground, tonemap, gamma, static triangular dither.
  *
  * Stars. Each star is an analytic, smoothly windowed gaussian (σ ≥ 0.62 canvas px) placed
  * in jittered grid cells of the rotated sky plane, so every star moves rigidly and its pixel
  * footprint never sparkles. Five cell scales give a realistic magnitude distribution
- * (intensities drawn from a Pareto law, N(>I) ∝ I^-1.25: many faint, few bright). The two
- * faint layers evaluate the 2×2 nearest cells with full jitter (no visible lattice); the
- * sparse bright layers use a single cell with a margin that fits the star's halo. Faint
- * stars gather in the Milky Way and vanish into its dust lanes.
+ * (intensities drawn from a Pareto law, N(>I) ∝ I^-1.25: many faint, few bright) and colour
+ * temperatures from blue-white to orange. The two faint layers (one of them a dense haze of
+ * stars that only exists inside the Milky Way) evaluate the 2×2 nearest cells with full
+ * jitter, so no lattice shows; the sparse bright layers use a single cell with a margin that
+ * fits the star's halo. Faint stars gather in the Milky Way and vanish into its dust lanes.
+ * Twinkle is a gentle, slow (4–20 s) brightness swell, a little stronger near the horizon.
  *
- * Seed (per display) changes the star field, the band's angle, the hills and the meteor
- * schedule, so displays differ subtly while keeping the same mood.
+ * Seed (per display) changes the star field, the band's angle, the hills (and which side the
+ * lone tree stands on) and the meteor schedule, so displays differ while keeping the same mood.
  */
 (function () {
   'use strict';
@@ -164,9 +166,12 @@
     '',
     '  // colour: cool silver along the disc, warm ivory toward the core, a little dust reddening',
     '  vec3 cool = vec3(0.76, 0.85, 1.00);',
-    '  vec3 warm = vec3(1.00, 0.85, 0.63);',
+    '  vec3 warm = vec3(1.00, 0.82, 0.58);',
     '  float wk = clamp(bulge * 1.8 + 0.1 * (1.0 - T) + 0.3 * smoothstep(0.2, 1.0, cosl) * thin, 0.0, 1.0);',
-    '  vec3 mw = mix(cool, warm, wk) * I * T * 0.050;',
+    '  vec3 mw = mix(cool, warm, wk) * I * T * 0.044;',
+    '  // faint rose emission nebulae scattered along the inner disc',
+    '  float hii = smoothstep(0.5, 0.85, fbmA(pi + 31.0, 8.0, 1.0)) * thin * smoothstep(-0.2, 0.9, cosl);',
+    '  mw += vec3(1.0, 0.45, 0.55) * hii * T * 0.010;',
     '  gl_FragColor = vec4(pow(mw, vec3(1.0 / 2.2)) + (hash12(gl_FragCoord.xy) - 0.5) / 255.0, T);',
     '}'
   ].join('\n');
@@ -308,7 +313,7 @@
     'uniform float uHalo;      // halo sigma of a bright star, canvas px',
     'uniform vec3 uFaint;      // faint stars: sigma², window radius², peak scale',
     'uniform vec4 uVis;        // layer visibility: faint, mid, bright, brilliant',
-    'uniform vec2 uVis2;       // haze visibility, unused',
+    'uniform vec2 uVis2;       // haze-layer visibility, unused',
     'uniform vec3 uMargin;     // cell margins (fraction) for the mid, bright, brilliant layers',
     'uniform vec3 uReach2;     // their early-out radii², canvas px²',
     'uniform float uT;',
@@ -318,6 +323,12 @@
     'uniform vec4 uSeed;       // star salt, airglow phase, glow x, unused',
     '',
     'float wnd(float d2, float r2) { float w = max(0.0, 1.0 - d2 / r2); return w * w; }',
+    '// three hashes for the price of one (Dave Hoskins)',
+    'vec3 hash32(vec2 p) {',
+    '  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));',
+    '  p3 += dot(p3, p3.yxz + 33.33);',
+    '  return fract((p3.xxy + p3.yzz) * p3.zyx);',
+    '}',
     '',
     '// blue-white (h = 0) … white … orange (h = 1), luminance-neutral',
     'vec3 tint(float h, float sat) { return vec3(1.0) + sat * (h - 0.42) * vec3(0.46, -0.05, -0.80); }',
@@ -337,20 +348,21 @@
     '  float pk = I * max(sig0 * sig0 / (sig * sig), uPeakFloor);',
     '  float d2 = dot(dv, dv);',
     '  float s2 = sig * sig;',
-    '  float v = pk * exp(-0.5 * d2 / s2) * wnd(d2, 16.0 * s2);',
+    '  float v = pk * exp(-0.5 * d2 / s2) * wnd(d2, 10.9 * s2);',
     '  float sh = uHalo * (1.0 + 0.35 * log2(I + 1.0));',
     '  float h2 = sh * sh;',
     '  v += 0.028 * I * smoothstep(0.4, 0.9, I) * exp(-0.5 * d2 / h2) * wnd(d2, 9.0 * h2);',
-    '  return tint(hc, clamp(0.3 + 0.4 * I, 0.0, 0.85)) * v * tw;',
+    '  return tint(hc, clamp(0.45 + 0.35 * I, 0.0, 0.9)) * v * tw;',
     '}',
     '',
     '// Sparse layers: one cell, the star kept a margin away from the edges (fits its halo).',
     'vec3 layer1(vec2 q, float cell, float prob, float iMin, float uMin, float salt, float margin, float reach2, float twAmp) {',
     '  vec2 g = q / cell;',
     '  vec2 id = floor(g);',
-    '  float h = hash12(id + salt);',
+    '  vec3 hh = hash32(id + salt);',
+    '  float h = hh.z;',
     '  if (h >= prob) return vec3(0.0);',
-    '  vec2 dv = (g - id - margin - (1.0 - 2.0 * margin) * hash22(id + salt + 31.7)) * cell * uStarPx;',
+    '  vec2 dv = (g - id - margin - (1.0 - 2.0 * margin) * hh.xy) * cell * uStarPx;',
     '  if (dot(dv, dv) > reach2) return vec3(0.0);',
     '  float u = h / prob;',
     '  float I = iMin * pow(mix(uMin, 1.0, u), -0.8);',
@@ -399,11 +411,7 @@
     '    vec3 mw = pow(mwT.rgb, vec3(2.2));',
     '    float mwF = smoothstep(0.001, 0.028, dot(mw, vec3(0.3, 0.6, 0.1)));',
     '    float low = 1.0 - smoothstep(0.08, 0.42, y);',
-    '#ifdef NOSTARS',
-    '    vec3 st = vec3(0.0);',
-    '#else',
     '    vec3 st = stars(s * uStarScale, mwF, mwT.a, 1.0 + 1.6 * low);',
-    '#endif',
     '    // atmospheric extinction and reddening toward the horizon',
     '    vec3 ext = mix(vec3(1.0), vec3(0.42, 0.34, 0.26), low * low);',
     '    col += (mw + st) * ext;',
@@ -429,16 +437,17 @@
       '  for (int j = 0; j < 2; j++) {',
       '    for (int i = 0; i < 2; i++) {',
       '      vec2 id = b + vec2(float(i), float(j));',
-      '      float h = hash12(id + uSeed.x + ' + f(salt) + ');',
+      '      vec3 hh = hash32(id + uSeed.x + ' + f(salt) + ');',
+      '      float h = hh.z;',
       '      if (h < ' + f(L.prob) + ') {',
-      '        vec2 dv = (q - (id + hash22(id + uSeed.x + ' + f(salt + 31.7) + ')) * ' + f(L.cell) + ') * uStarPx;',
+      '        vec2 dv = (q - (id + hh.xy) * ' + f(L.cell) + ') * uStarPx;',
       '        float d2 = dot(dv, dv);',
       '        if (d2 < uFaint.y) {',
       '          float u = h * ' + f(1 / L.prob) + ';',
       '          float I = ' + f(L.iMin) + ' * pow(mix(' + f(uMinOf(L)) + ', 1.0, u), -0.8);',
       '          float k = mix(kDust, kFaint, smoothstep(0.03, 0.09, I));',
       '          float tw = 1.0 + twk * smoothstep(0.05, 0.2, I) * sin(uT * (0.35 + 0.9 * fract(u * 23.17)) + 6.2831 * fract(u * 57.31));',
-      '          acc += tint(fract(u * 13.71), 0.55) * (I * k * tw * exp(-0.5 * d2 / uFaint.x) * wnd(d2, uFaint.y));',
+      '          acc += tint(fract(u * 13.71), 0.6) * (I * k * tw * exp(-0.5 * d2 / uFaint.x) * wnd(d2, uFaint.y));',
       '        }',
       '      }',
       '    }',
@@ -458,11 +467,11 @@
     return [
       'vec3 stars(vec2 q, float mwF, float dustT, float twk) {',
       '  vec3 c = vec3(0.0);',
-      '  float kDust = (0.07 + 3.6 * mwF) * dustT;',
-      '  float kFaint = (0.6 + 0.9 * mwF) * mix(1.0, dustT, 0.75);',
+      '  float kDust = (0.10 + 3.6 * mwF) * dustT;',
+      '  float kFaint = (0.75 + 0.9 * mwF) * mix(1.0, dustT, 0.75);',
       '  if (uVis.x > 0.0) c += uVis.x * faintStars(q, kDust, kFaint, 0.05 * twk);',
       '  // the Milky Way is made of countless faint stars',
-      '  if (mwF > 0.03 && uVis2.x > 0.0) c += uVis2.x * (2.6 * mwF * dustT) * hazeStars(q * mat2(0.6, 0.8, -0.8, 0.6), 1.0, 1.0, 0.0);',
+      '  if (mwF > 0.03 && uVis2.x > 0.0) c += uVis2.x * (7.0 * mwF * smoothstep(0.03, 0.12, mwF) * dustT) * hazeStars(q * mat2(0.6, 0.8, -0.8, 0.6), 1.0, 1.0, 0.0);',
       '  if (uVis.y > 0.0) c += uVis.y * mix(1.0, dustT, 0.5) * ' + call(M, 'mat2(0.28, -0.96, 0.96, 0.28) * q + vec2(-13.7, 41.9)', 29, 0, '0.07 * twk') + ';',
       '  if (uVis.z > 0.0) c += uVis.z * mix(1.0, dustT, 0.3) * ' + call(B, 'mat2(-0.6, 0.8, -0.8, -0.6) * q + vec2(311.0, -97.0)', 43, 1, '0.08 * twk') + ';',
       '  if (uVis.w > 0.0) c += uVis.w * ' + call(X, 'mat2(0.96, 0.28, -0.28, 0.96) * q + vec2(-517.0, 233.0)', 59, 2, '0.08 * twk') + ';',
@@ -549,7 +558,7 @@
       var tri = G.fullscreenTriangle(gl);
       var pMW = G.createProgram(gl, G.FULLSCREEN_VS, HEADER + lib + MW_FS);
       var pFG = G.createProgram(gl, G.FULLSCREEN_VS, HEADER + lib + FG_FS);
-      var pMain = G.createProgram(gl, G.FULLSCREEN_VS, HEADER + (window.__nightDefs || '') + lib + MAIN_FS);
+      var pMain = G.createProgram(gl, G.FULLSCREEN_VS, HEADER + lib + MAIN_FS);
 
       var rtMW = null, rtFG = null, geo = null, builtKey = '';
 
@@ -574,7 +583,7 @@
         var psf = PSF_CSS * pr;
         var halo = Math.max(psf, 0.4) * 4.5;
         var sigFaint = Math.max(psf * 1.1, SIG_MIN);
-        var faintReach = 4 * sigFaint;
+        var faintReach = 3.3 * sigFaint;
         // a layer fades out when its cells get too small (in canvas px) to hold its stars
         var visFaint = U.smoothstep(2.0, 2.7, LAYERS.faint.cell * starPx / faintReach);
         var visHaze = U.smoothstep(2.0, 2.7, LAYERS.haze.cell * starPx / faintReach);
@@ -582,7 +591,7 @@
           var I = L.iMax;
           var sig = Math.max(psf * (1 + 0.22 * Math.log2(Math.max(1, I * 2.5))), SIG_MIN);
           var sh = halo * (1 + 0.35 * Math.log2(I + 1));
-          return Math.max(4 * sig, 3 * sh) + 0.5;
+          return Math.max(3.3 * sig, 3 * sh) + 0.5;
         }
         function visOne(L) { return 1 - U.smoothstep(0.30, 0.44, reachOf(L) / (L.cell * starPx)); }
         function marginOf(L) { return Math.min(reachOf(L) / (L.cell * starPx), 0.44); }

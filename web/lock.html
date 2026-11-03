@@ -23,9 +23,11 @@
 
   <section class="timer" id="timer" aria-label="Session timer">
     <p class="timer-intention" id="intention" hidden></p>
-    <div class="timer-clock" id="clock" role="timer" aria-live="off">--:--</div>
-    <p class="timer-meta"><span id="remainingLabel">remaining</span><span class="sep" aria-hidden="true">·</span><span id="endsLabel">ends</span></p>
-    <div class="timer-progress" aria-hidden="true"><span id="sessionFill"></span></div>
+    <div class="timer-body">
+      <div class="timer-clock" id="clock" role="timer" aria-live="off">--:--</div>
+      <p class="timer-meta"><span id="remainingLabel">remaining</span><span class="sep" aria-hidden="true">·</span><span id="endsLabel">ends</span></p>
+      <div class="timer-progress" aria-hidden="true"><span id="sessionFill"></span></div>
+    </div>
   </section>
 
   <section class="player glass ctl" id="player" data-view="loading" aria-label="Spotify">
