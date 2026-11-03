@@ -54,7 +54,7 @@
   var R_MIN = 0.11;             // radius as a fraction of min(viewport): 22 % diameter
   var R_MAX = 0.19;             //                                          38 % diameter
   var PATTERN_BLEND = 2.2;      // seconds to blend when the pattern changes
-  var WORD_LEAD = 0.35;         // seconds: the word starts crossfading slightly early
+  var WORD_LEAD = 0.6;          // seconds: the word starts changing slightly before the phase does
   var HOLD_RAMP = 0.9;          // seconds: hold shimmer eases in/out over this
   var MIST_DIV = 4;             // mist pass resolution divisor
 
@@ -98,9 +98,9 @@
   // ───────────────────────── colour ─────────────────────────
   // sRGB hex; converted to linear light once.
   var THEMES = {
-    blue: { deep: '#03050b', mid: '#0a1227', haze: '#26396b', orb: '#adc4ee', halo: '#5b80c9', core: '#fff4e8' },
-    plum: { deep: '#060409', mid: '#170c1e', haze: '#4f2d57', orb: '#dfbddb', halo: '#a46b97', core: '#fff2ea' },
-    teal: { deep: '#02080a', mid: '#071b1e', haze: '#1d5150', orb: '#abdfd6', halo: '#4c9e93', core: '#f7fbef' }
+    blue: { deep: '#03050b', mid: '#0a1227', haze: '#26396b', orb: '#a3bcf0', halo: '#5a7fcb', core: '#f8f6f4' },
+    plum: { deep: '#060409', mid: '#160c1f', haze: '#4a2d5a', orb: '#d3b2de', halo: '#9a68a6', core: '#fcf3f1' },
+    teal: { deep: '#02080a', mid: '#071b1e', haze: '#1d5150', orb: '#9bd9cf', halo: '#479d91', core: '#f4f9f3' }
   };
   var ROLES = ['deep', 'mid', 'haze', 'orb', 'halo', 'core'];
   var THEME_ORDER = ['blue', 'plum', 'blue', 'teal'];   // ping-pong through dusk blue: never plum↔teal directly
@@ -159,18 +159,13 @@
     'uniform float uPr;        // canvas px per css px',
     'uniform float uT;         // shimmer clock (s)',
     'uniform vec4 uSeed;',
-    'uniform vec4 uB;          // fullness 0…1, hold shimmer 0…1, brightness, unused',
+    'uniform vec4 uB;          // fullness 0…1, hold shimmer 0…1, brightness, ring light',
     'uniform vec3 uDeep;',
     'uniform vec3 uMid;',
     'uniform vec3 uHaze;',
     'uniform vec3 uOrb;',
     'uniform vec3 uHalo;',
     'uniform vec3 uCore;',
-    '',
-    '// light from the orb as a function of distance from its edge, in orb radii',
-    'float haloAt(float o) {',
-    '  return 0.26 * exp(-o * 5.0) + 0.12 * exp(-o * 1.7) + 0.045 * exp(-o * 0.55);',
-    '}',
     '',
     'void main() {',
     '  vec2 fc = gl_FragCoord.xy;',
@@ -182,55 +177,68 @@
     '  float mv = ms.r;',
     '',
     '  // ── background: a deep pool of colour around the orb, faint mist ──',
-    '  float rn = length(pn * vec2(0.8, 1.0));',
-    '  vec3 mid = mix(uMid, mix(uMid, uHaze, 0.22), smoothstep(0.35, 0.85, ms.g));',
-    '  vec3 col = mix(mid, uDeep, smoothstep(0.02, 0.95, rn));',
-    '  col *= 0.86 + 0.28 * mv;',
+    '  float rn = length(pn * vec2(0.78, 1.0));',
+    '  vec3 mid = mix(uMid, uHaze * 0.55, 0.18 * smoothstep(0.3, 0.9, ms.g));',
+    '  vec3 col = mix(mid, uDeep, smoothstep(0.0, 0.9, rn));',
+    '  col *= 0.8 + 0.4 * mv;',
     '',
-    '  // ── halo, scattered through the mist ──',
+    '  // ── halo: a tight bloom and a wide glow, scattered through the mist ──',
     '  float o = max(dist - R, 0.0) / R;',
-    '  float halo = haloAt(o) * uB.z;',
-    '  float scatter = mix(1.0, 0.6 + 0.8 * mv, smoothstep(0.1, 1.5, o));',
+    '  float halo = (0.22 * exp(-o * 5.5) + 0.10 * exp(-o * 1.8) + 0.035 * exp(-o * 0.8)) * uB.z;',
+    '  float scatter = mix(1.0, 0.55 + 0.9 * mv, smoothstep(0.15, 1.6, o));',
     '  col += uHalo * halo * scatter;',
     '',
-    '  // ── guide ring at the full-inhale radius, lit by the halo ──',
-    '  float sig = max(0.5 * uPr, 0.7);',
-    '  float rr = dist - uR.y;',
-    '  float ring = exp(-0.5 * rr * rr / (sig * sig)) * min(1.0, 0.7 * uPr / sig);',
-    '  float ringLit = 0.06 + 0.8 * haloAt(max(uR.y - R, 0.0) / R) * uB.z;',
-    '  col += mix(uHalo, vec3(1.0, 0.96, 0.9), 0.5) * ring * ringLit * (0.55 + 0.6 * mv) * 0.5;',
+    '  // ── guide ring at the full-inhale radius, lit a little by the halo ──',
+    '  float sig = max(0.5 * uPr, 0.75);',
+    '  float rr = (dist - uR.y) / (2.6 * sig);',
+    '  float ring = max(0.0, 1.0 - rr * rr);',
+    '  ring *= ring * min(1.0, 0.7 * uPr / sig);',
+    '  col += mix(uHalo, uCore, 0.3) * ring * uB.w * (0.6 + 0.8 * mv);',
     '',
     '  // ── the orb ──',
-    '  float aa = max(1.6 * uPr, R * 0.012) / R;',
+    '  float aa = max(max(1.0, R * 0.011), min(1.5 * uPr, R * 0.03)) / R;   // edge softness',
     '  float r = dist / R;',
     '  if (r < 1.0 + 2.0 * aa) {',
     '    vec2 q = d / R;',
-    '    float z = sqrt(max(1.0 - r * r, 0.0));',
+    '    float r2 = min(r * r, 1.0);',
+    '    float z = sqrt(1.0 - r2);',
+    '    // surface: slow noise wrapped on the sphere (foreshortened at the limb), turning slowly',
     '    vec3 n = vec3(q, z);',
     '    n.xz = rot2(uT * 0.019 + uSeed.z) * n.xz;',
     '    n.yz = rot2(0.4) * n.yz;',
-    '    float sn = snoise(n * 1.6 + vec3(uSeed.w, 0.0, uT * 0.035));',
+    '    float sn = snoise(n * 1.45 + vec3(uSeed.w, 0.0, uT * 0.035));',
     '#if SURF_OCT > 1',
-    '    sn = sn * 0.7 + 0.3 * snoise(n * 3.9 + vec3(0.0, uT * 0.05, uSeed.w));',
+    '    sn = sn * 0.78 + 0.22 * snoise(n * 3.4 + vec3(0.0, uT * 0.05, uSeed.w));',
+    '    // inner fog: a smaller sphere turning the other way, for a sense of depth',
+    '    vec3 m3 = vec3(q * 1.6, z * 0.9);',
+    '    m3.xz = rot2(-uT * 0.013 - uSeed.z) * m3.xz;',
+    '    float fog = snoise(m3 * 1.1 + vec3(-uSeed.w, uT * 0.02, 0.0));',
+    '#else',
+    '    float fog = sn;',
     '#endif',
     '    // holds: a finer, slightly livelier shimmer fades in',
-    '    float hs = uB.y > 0.001 ? snoise(n * 6.5 + vec3(uT * 0.21, -uT * 0.17, uSeed.w)) : 0.0;',
-    '    float shimmer = 1.0 + 0.07 * sn + 0.045 * uB.y * hs;',
-    '    float body = pow(z, 0.75);',
-    '    float core = exp(-r * r * 2.2);',
-    '    float rim = pow(1.0 - z, 2.5);',
-    '    vec3 c = uOrb * (0.10 + 0.42 * body) + uCore * core * 0.42 + uHalo * rim * 0.42;',
+    '    float hs = uB.y > 0.001 ? snoise(n * 4.2 + vec3(uT * 0.16, -uT * 0.12, uSeed.w)) : 0.0;',
+    '    float shimmer = 1.0 + 0.085 * sn + 0.04 * uB.y * hs;',
+    '    // warm core → pale tinted body → saturated limb; the fog nudges the colour warmer/cooler',
+    '    float rt = clamp(r + 0.12 * fog * (1.0 - r * r), 0.0, 1.0);',
+    '    vec3 tint = mix(uCore, uOrb, smoothstep(0.0, 0.85, rt));',
+    '    tint = mix(tint, uHalo, 0.72 * smoothstep(0.5, 1.0, rt));',
+    '    float e = 0.13 + 0.29 * pow(z, 0.9) + 0.38 * exp(-r2 * 3.0);',
+    '    e *= 1.0 + 0.09 * fog * z;',
+    '    float rim = (1.0 - z);',
+    '    rim *= rim * rim;',
+    '    vec3 c = tint * e * shimmer + uHalo * rim * 0.26;',
     '    // a soft sheen toward the upper left so it reads as round',
-    '    vec2 sq = q - vec2(-0.30, 0.34);',
-    '    c += uCore * 0.07 * exp(-dot(sq, sq) * 2.6);',
-    '    c *= shimmer * uB.z;',
+    '    vec2 sq = q - vec2(-0.32, 0.36);',
+    '    c += uCore * 0.06 * exp(-dot(sq, sq) * 2.8) * shimmer;',
+    '    c *= uB.z;',
     '    float cov = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, r);',
-    '    col = mix(col, c + uHalo * haloAt(0.0) * uB.z * 0.5, cov);',
+    '    col = mix(col, c + uHalo * 0.16 * uB.z, cov);',
     '  }',
     '',
     '  // ── gentle vignette ──',
     '  vec2 uv = fc / uRes - 0.5;',
-    '  col *= 1.0 - 0.3 * smoothstep(0.45, 1.2, length(uv * vec2(1.0, 0.85)) * 1.4);',
+    '  col *= 1.0 - 0.38 * smoothstep(0.3, 0.75, length(uv * vec2(1.0, 0.8)));',
     '',
     '  col = tonemap(col);',
     '  col = pow(col, vec3(1.0 / 2.2));',
@@ -311,7 +319,7 @@
           'letter-spacing:0.16em;padding-left:0.16em;line-height:1.5em;color:rgba(' + TEXT_RGB + ',0.5);' +
           'text-shadow:0 1px 14px rgba(0,0,0,0.35);opacity:0;filter:blur(3px);-webkit-filter:blur(3px);' +
           'transform:translateY(3px);will-change:opacity;' +
-          'transition:opacity 1.1s ' + EASE + ',filter 1.1s ' + EASE + ',-webkit-filter 1.1s ' + EASE + ',transform 1.4s ' + EASE + ';');
+          '');
         wordBox.appendChild(w);
         return w;
       }
@@ -330,21 +338,23 @@
         w.style.transform = on ? 'translateY(0)' : 'translateY(-3px)';
       }
 
+      // The outgoing word dissolves quickly; the new one follows a beat later and settles in
+      // from slightly below, so the two barely overlap.
+      var T_OUT = 'opacity 0.7s ' + EASE + ',filter 0.7s ' + EASE + ',-webkit-filter 0.7s ' + EASE + ',transform 0.9s ' + EASE;
+      var T_IN = 'opacity 1.2s ' + EASE + ' 0.35s,filter 1.2s ' + EASE + ' 0.35s,-webkit-filter 1.2s ' + EASE + ' 0.35s,transform 1.5s ' + EASE + ' 0.35s';
       function showWord(text, instant) {
         if (text === shownText) return;
         shownText = text;
         var next = activeWord === 0 ? 1 : 0;
         var inc = words[next], out = words[activeWord] || null;
-        // incoming word starts slightly below and blurred, settles in place
         inc.style.transition = 'none';
         inc.style.transform = 'translateY(3px)';
         inc.textContent = text;
         void inc.offsetWidth;
-        inc.style.transition = instant ? 'none' :
-          'opacity 1.1s ' + EASE + ',filter 1.1s ' + EASE + ',-webkit-filter 1.1s ' + EASE + ',transform 1.4s ' + EASE;
+        inc.style.transition = instant ? 'none' : T_IN;
         setWordVisible(inc, true);
         if (out) {
-          if (instant) out.style.transition = 'none';
+          out.style.transition = instant ? 'none' : T_OUT;
           setWordVisible(out, false);
         }
         activeWord = next;
@@ -358,7 +368,7 @@
         var total = pat.total;
         for (var i = 0; i < pat.length; i++) {
           var s = div('position:relative;height:2px;border-radius:1px;overflow:hidden;background:rgba(' + TEXT_RGB + ',0.11);');
-          s.style.width = (pat[i].dur / total * 100).toFixed(2) + '%';
+          s.style.flex = (pat[i].dur / total).toFixed(4) + ' 1 0px';
           var fill = div('position:absolute;inset:0;border-radius:1px;background:rgba(' + TEXT_RGB + ',0.46);' +
             'transform-origin:0 50%;transform:scaleX(0);opacity:0;');
           s.appendChild(fill);
@@ -478,6 +488,10 @@
           var R = m * U.lerp(R_MIN, R_MAX, full);
           var th = themeAt(sec, frozen);
           var bright = 0.84 + 0.16 * full;
+          // the guide ring catches a little more of the orb's light as the orb nears it
+          var gapR = (R_MAX - U.lerp(R_MIN, R_MAX, full)) / U.lerp(R_MIN, R_MAX, full);
+          var ringLight = (0.03 + 0.10 * Math.exp(-gapR * 4.0) * bright) *
+            U.smoothstep(0.01, 0.12, gapR);   // …and dissolves into the orb's edge at full inhale
 
           var P = programsFor();
           ensureTargets();
@@ -506,7 +520,7 @@
             .set('uPr', env.pixelRatio)
             .set('uT', t + timeOff)
             .set('uSeed', seed)
-            .set('uB', [full, hold, bright, 0])
+            .set('uB', [full, hold, bright, ringLight])
             .set('uDeep', th.deep)
             .set('uMid', th.mid)
             .set('uHaze', th.haze)

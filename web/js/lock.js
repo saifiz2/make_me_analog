@@ -324,7 +324,7 @@
     var icon = 'note', title = '', text = '', action = null;
     if (view === 'notinstalled') {
       icon = 'note'; title = 'Spotify isn’t installed';
-      text = 'Music controls appear here when it is. Tonight it’s just you and the page.';
+      text = 'Music controls appear here when it is. For now, it’s just you and the page.';
     } else if (view === 'notrunning') {
       icon = 'power'; title = 'Spotify isn’t running';
       text = 'Start it quietly in the background, then pick something to play.';

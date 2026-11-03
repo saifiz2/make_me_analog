@@ -77,7 +77,7 @@ body.has-modal .timer, body.is-ending .timer {
   opacity: 0;
   transition: opacity 600ms var(--ease);
 }
-html.is-idle-cursor, body.is-idle:not(.has-modal), body.is-idle:not(.has-modal) * { cursor: none !important; }
+body.is-idle:not(.has-modal), body.is-idle:not(.has-modal) * { cursor: none !important; }
 
 /* ───────────── Countdown ───────────── */
 .timer {

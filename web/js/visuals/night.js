@@ -59,16 +59,17 @@
   // Per-quality budgets for the Milky Way bake (texels per canvas px, max size).
   var Q = {
     saver:    { mwRes: 0.7, mwMax: 1536 },
-    balanced: { mwRes: 0.9, mwMax: 2048 },
+    balanced: { mwRes: 1.0, mwMax: 2048 },
     high:     { mwRes: 1.0, mwMax: 2048 }
   };
 
-  // Star layers: cell (star px), probability, intensity range, halo.
-  //   faint layers (2×2): dust, faint.  single-cell layers: mid, bright, brilliant.
+  // Star layers (cell in star px ≈ css px; intensity = peak linear brightness at the natural PSF).
+  //   haze (only inside the Milky Way) and faint: the 2×2 nearest cells, full jitter.
+  //   mid / bright / brilliant: one cell, with a margin that fits the star's halo.
   var LAYERS = {
-    dust:      { cell: 13,  prob: 0.85, iMin: 0.010, iMax: 0.05 },
-    faint:     { cell: 21,  prob: 0.72, iMin: 0.035, iMax: 0.22 },
-    mid:       { cell: 54,  prob: 0.62, iMin: 0.18,  iMax: 0.9 },
+    haze:      { cell: 7,   prob: 0.85, iMin: 0.008, iMax: 0.04 },
+    faint:     { cell: 12,  prob: 0.88, iMin: 0.010, iMax: 0.22 },
+    mid:       { cell: 50,  prob: 0.72, iMin: 0.16,  iMax: 0.9 },
     bright:    { cell: 150, prob: 0.55, iMin: 0.7,   iMax: 2.4 },
     brilliant: { cell: 400, prob: 0.42, iMin: 2.0,   iMax: 4.5 }
   };
@@ -86,11 +87,12 @@
     'uniform vec3 uOff;        // noise offset (seed)',
     'uniform float uTexRad;    // radians per texel (octave LOD)',
     '',
-    '// fbm on the sphere; octaves finer than ~3 texels fade out (no shimmer once rotated)',
-    'float fbmL(vec3 p, float f) {',
+    '// fbm; octaves finer than ~3 texels fade out, so the rotating texture never shimmers.',
+    '// an = how much finer the noise is across the band than along it (anisotropy).',
+    'float fbmA(vec3 p, float f, float an) {',
     '  float s = 0.0, a = 0.5;',
     '  for (int i = 0; i < 6; i++) {',
-    '    float lod = 1.0 - smoothstep(0.10, 0.26, f * uTexRad);',
+    '    float lod = 1.0 - smoothstep(0.12, 0.30, f * an * uTexRad);',
     '    if (lod <= 0.0) break;',
     '    s += a * lod * snoise(p * f);',
     '    f *= 2.03; a *= 0.5;',
@@ -98,10 +100,10 @@
     '  }',
     '  return s;',
     '}',
-    'float ridgedL(vec3 p, float f) {',
+    'float ridgedA(vec3 p, float f, float an) {',
     '  float s = 0.0, a = 0.5;',
     '  for (int i = 0; i < 4; i++) {',
-    '    float lod = 1.0 - smoothstep(0.10, 0.26, f * uTexRad);',
+    '    float lod = 1.0 - smoothstep(0.12, 0.30, f * an * uTexRad);',
     '    if (lod <= 0.0) break;',
     '    float n = 1.0 - abs(snoise(p * f));',
     '    s += a * lod * n * n;',
@@ -121,45 +123,50 @@
     '  float b = asin(clamp(dot(d, uNGP), -1.0, 1.0));',
     '  float l = atan(dot(d, uE2), dot(d, uGC));',
     '  if (abs(b) > 0.8) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }',
-    '  vec3 p = d + uOff;',
+    '  // noise spaces: pa is stretched along the band (seamless circle in l), pi is isotropic',
+    '  const float AN = 2.6;',
+    '  vec3 pa = vec3(cos(l), sin(l), b * AN) + uOff;',
+    '  vec3 pi = d + uOff.yzx;',
     '',
-    '  // the band meanders a little and breathes in width',
-    '  float w1 = fbmL(p, 1.6);',
-    '  float bw = b + 0.05 * w1;',
+    '  float w1 = fbmA(pa, 1.2, AN);',
+    '  float bw = b + 0.035 * w1;                  // the band meanders a little',
     '  float lr = l * uRift;                       // > 0 toward the rift / the pole',
     '  float cosl = cos(l);',
-    '  float lonF = 0.42 + 0.58 * smoothstep(-0.6, 1.0, cosl);',
-    '  float wid = 0.085 * (1.0 + 0.25 * fbmL(p + 4.0, 1.1));',
+    '  float lonF = 0.38 + 0.62 * smoothstep(-0.7, 1.0, cosl);',
+    '  float wid = 0.078 * (1.0 + 0.3 * fbmA(pa + 4.0, 0.9, AN)) * (1.0 + 0.4 * smoothstep(0.4, 1.0, cosl));',
     '  float thin = exp(-bw * bw / (wid * wid));',
-    '  float thick = exp(-bw * bw / (0.26 * 0.26));',
-    '  float bulge = exp(-l * l / (0.30 * 0.30) - bw * bw / (0.15 * 0.15));',
+    '  float thick = exp(-bw * bw / (0.24 * 0.24));',
+    '  float bulge = exp(-l * l / (0.24 * 0.24) - bw * bw / (0.12 * 0.12));',
     '',
-    '  // star clouds',
-    '  float cl = fbmL(p, 6.0);',
-    '  float clouds = 0.40 + 0.95 * smoothstep(-0.35, 0.55, cl);',
-    '  float grain = fbmL(p + 9.0, 26.0);',
-    '  float I = (0.62 * thin * clouds * (0.85 + 0.3 * grain) + 0.20 * thick * (0.75 + 0.35 * cl)) * lonF;',
-    '  I += 1.05 * bulge * (0.62 + 0.55 * smoothstep(-0.3, 0.6, cl)) * (0.9 + 0.2 * grain);',
+    '  // star clouds, elongated along the band, with a fine isotropic grain',
+    '  float cl = fbmA(pa + 9.0, 4.0, AN);',
+    '  float cl2 = fbmA(pi + 6.0, 14.0, 1.0);',
+    '  float clouds = 0.25 + 1.25 * smoothstep(-0.35, 0.55, cl + 0.35 * cl2);',
+    '  float grain = fbmA(pi + 2.0, 34.0, 1.0);',
+    '  float I = (0.70 * thin * clouds * (0.82 + 0.4 * grain) + 0.16 * thick * (0.8 + 0.3 * cl)) * lonF;',
+    '  I += 1.9 * bulge * (0.6 + 0.6 * smoothstep(-0.3, 0.6, cl + 0.3 * cl2)) * (0.88 + 0.3 * grain);',
     '',
-    '  // dust: the Great Rift (from the core toward the pole), filaments, mottling',
-    '  float riftB = 0.012 + 0.022 * snoise(p * 2.4 + 3.0);',
-    '  float riftW = 0.020 + 0.012 * smoothstep(-0.2, 0.8, lr);',
+    '  // dust: the Great Rift (from the core toward the pole), soft elongated dust clouds',
+    '  // with wispy multi-scale edges, and dark nebulae scattered around the core',
+    '  float riftB = 0.006 + 0.030 * fbmA(pa + 7.0, 2.6, AN);',
+    '  float riftW = 0.009 + 0.020 * smoothstep(-0.4, 0.5, fbmA(pa + 3.0, 3.5, AN)) * smoothstep(-0.3, 0.6, lr);',
     '  float rz = (bw - riftB) / riftW;',
-    '  float rift = exp(-rz * rz);',
-    '  rift *= smoothstep(-0.25, 0.10, lr) * (1.0 - smoothstep(1.2, 1.9, lr));',
-    '  rift *= 0.45 + 0.75 * smoothstep(-0.4, 0.4, fbmL(p + 21.0, 3.2));',
-    '  float fil = ridgedL(p + 13.0 + 0.4 * w1, 7.0);',
-    '  fil = smoothstep(0.35, 0.75, fil) * exp(-bw * bw / (0.14 * 0.14));',
-    '  float mott = smoothstep(0.0, 0.55, fbmL(p + 33.0, 11.0)) * thin;',
-    '  float tau = 1.9 * rift + 1.1 * fil + 0.75 * mott;',
+    '  float rz2 = (bw - riftB - 0.032) / (riftW * 0.5);',
+    '  float rift = exp(-rz * rz) + 0.6 * exp(-rz2 * rz2) * smoothstep(0.1, 0.5, fbmA(pa + 41.0, 5.0, AN));',
+    '  rift *= smoothstep(-0.30, 0.02, lr) * (1.0 - smoothstep(0.8, 1.5, lr));',
+    '  rift *= 0.15 + 1.0 * smoothstep(-0.25, 0.45, fbmA(pa + 21.0, 4.5, AN) + 0.3 * cl2);',
+    '  float dn = fbmA(pa + 13.0, 3.4, AN) + 0.45 * fbmA(pi + 17.0, 11.0, 1.0);',
+    '  float lanes = smoothstep(0.08, 0.5, dn) * exp(-bw * bw / (0.085 * 0.085));',
+    '  float neb = smoothstep(0.15, 0.65, fbmA(vec3(pa.xy, b * 1.6) + 5.0, 6.5, 1.6) + 0.45 * cl2);',
+    '  neb *= exp(-l * l / (0.45 * 0.45) - bw * bw / (0.16 * 0.16));',
+    '  float tau = 1.6 * rift + 1.1 * lanes + 0.95 * neb;',
     '  float T = exp(-tau);',
     '',
-    '  // colour: cool silver along the disc, warm ivory in the bulge, dust-reddened edges',
-    '  vec3 cool = vec3(0.80, 0.86, 1.00);',
-    '  vec3 warm = vec3(1.00, 0.84, 0.62);',
-    '  float wk = clamp(bulge * 1.5 + 0.45 * (1.0 - T) + 0.15 * thick, 0.0, 1.0);',
-    '  vec3 col = mix(cool, warm, wk);',
-    '  vec3 mw = col * I * T * 0.040;',
+    '  // colour: cool silver along the disc, warm ivory toward the core, a little dust reddening',
+    '  vec3 cool = vec3(0.76, 0.85, 1.00);',
+    '  vec3 warm = vec3(1.00, 0.85, 0.63);',
+    '  float wk = clamp(bulge * 1.8 + 0.1 * (1.0 - T) + 0.3 * smoothstep(0.2, 1.0, cosl) * thin, 0.0, 1.0);',
+    '  vec3 mw = mix(cool, warm, wk) * I * T * 0.050;',
     '  gl_FragColor = vec4(pow(mw, vec3(1.0 / 2.2)) + (hash12(gl_FragCoord.xy) - 0.5) / 255.0, T);',
     '}'
   ].join('\n');
@@ -173,6 +180,10 @@
     'uniform vec4 uSeed;',
     'uniform float uSide;      // +1: the lone tree stands right of centre, -1: left',
     '',
+    'float sq(float x) { return x * x; }',
+    'float treeX() { return uSide * 0.30 * uAspect; }',
+    'float forestAt(float x) { return exp(-sq((x + treeX() * 1.3) / 0.36)); }',
+    '',
     'float farRidge(float x) {',
     '  float n = 0.078 + 0.030 * snoise(vec2(x * 0.75 + uSeed.x, 1.3));',
     '  n += 0.012 * snoise(vec2(x * 2.2 + uSeed.x, 4.1));',
@@ -180,12 +191,12 @@
     '  n += 0.0010 * snoise(vec2(x * 23.0 + uSeed.x, 2.2));',
     '  return n;',
     '}',
-    'float sq(float x) { return x * x; }',
     'float hills(float x) {',
-    '  float xc = uSide * 0.30 * uAspect;',
+    '  float xc = treeX();',
     '  float h = 0.026 + 0.006 * snoise(vec2(x * 1.7 + uSeed.y, 2.0));',
     '  h += 0.072 * exp(-sq((x - xc) / 0.30));',
-    '  h += 0.062 * exp(-sq((x + xc * 1.3) / 0.40));',
+    '  h += 0.060 * exp(-sq((x + xc * 1.3) / 0.40));',
+    '  h += 0.016 * forestAt(x);                   // undergrowth under the forest',
     '  h += 0.0025 * snoise(vec2(x * 6.0 + uSeed.y, 5.0));',
     '  return h;',
     '}',
@@ -193,30 +204,32 @@
     'float conifer(vec2 p, float cx, float base, float th, float px, float r) {',
     '  float rel = (p.y - base) / th;',
     '  if (rel < 0.0 || rel > 1.0) return 0.0;',
-    '  float tiers = rel * (7.0 + 5.0 * r) + r * 3.0;',
+    '  float tiers = rel * (6.0 + 4.0 * r) + r * 3.0;',
     '  float saw = fract(tiers);',
-    '  float jag = 0.8 + 0.4 * hash11(floor(tiers) + r * 91.0);',
-    '  float prof = 0.62 + 0.38 * (1.0 - saw) * smoothstep(0.0, 0.15, saw);',
-    '  float w = th * (0.12 + 0.06 * r) * pow(1.0 - rel, 1.15) * prof * jag + th * 0.008;',
+    '  float jag = 0.75 + 0.5 * hash11(floor(tiers) + r * 91.0);',
+    '  float prof = 0.55 + 0.45 * (1.0 - saw) * smoothstep(0.0, 0.2, saw);   // drooping tiers',
+    '  float w = th * (0.20 + 0.07 * r) * pow(1.0 - rel, 1.1) * prof * jag + th * 0.010;',
     '  return clamp((w - abs(p.x - cx)) / px + 0.5, 0.0, 1.0);',
     '}',
     '',
     'float trees(vec2 p, float px) {',
-    '  float xc = uSide * 0.30 * uAspect;',
-    '  float cw = 0.016;',
+    '  float xc = treeX();',
+    '  float cw = 0.0068;',
     '  float ci = floor(p.x / cw);',
     '  float cov = 0.0;',
-    '  for (int k = -3; k <= 3; k++) {',
+    '  for (int k = -4; k <= 4; k++) {',
     '    float id = ci + float(k);',
-    '    float cx = (id + 0.5 + (hash11(id * 2.11 + uSeed.z) - 0.5) * 0.8) * cw;',
-    '    // forest on the far-side hill, sparse elsewhere, a clear crest around the lone tree',
-    '    float forest = exp(-sq((cx + xc * 1.3) / 0.36));',
-    '    float dens = 0.10 + 0.85 * forest;',
-    '    dens *= 1.0 - exp(-sq((cx - xc) / 0.16));',
+    '    float cx = (id + hash11(id * 2.11 + uSeed.z)) * cw;',
+    '    // a forest on the far-side hill, a few copses, a clear crest around the lone tree',
+    '    float forest = forestAt(cx);',
+    '    float copse = smoothstep(0.55, 0.8, snoise(vec2(cx * 4.0 + uSeed.z, 1.7)));',
+    '    float dens = max(0.75 * smoothstep(0.08, 0.5, forest), 0.7 * copse);',
+    '    dens *= 1.0 - exp(-sq((cx - xc) / 0.15));',
     '    if (hash11(id * 1.37 + uSeed.z) > dens) continue;',
     '    float hr = hash11(id * 3.7 + 1.0 + uSeed.z);',
-    '    float th = (0.022 + 0.055 * pow(hr, 1.4)) * (0.55 + 0.6 * forest);',
-    '    float base = hills(cx) - 0.004;',
+    '    float canopy = 0.5 + 0.5 * snoise(vec2(cx * 9.0 + uSeed.z, 4.4));   // the canopy line undulates',
+    '    float th = (0.020 + 0.042 * canopy + 0.034 * hr * hr * hr) * (0.5 + 0.6 * max(forest, copse));',
+    '    float base = hills(cx) - 0.006;',
     '    cov = max(cov, conifer(p, cx, base, th, px, hash11(id * 5.3 + uSeed.z)));',
     '  }',
     '  return cov;',
@@ -227,31 +240,34 @@
     '  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);',
     '  return length(pa - ba * h) - mix(ra, rb, h);',
     '}',
+    'float smin(float a, float b, float k) {',
+    '  float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);',
+    '  return mix(b, a, h) - k * h * (1.0 - h);',
+    '}',
     '',
-    '// A lone broadleaf tree on the crest: trunk, a few limbs, a leafy crown of blobs.',
+    '// A lone broadleaf tree on the crest: trunk, a few limbs, a lumpy leafy crown.',
     'float loneTree(vec2 p, float px) {',
-    '  float xc = uSide * 0.30 * uAspect + uSide * 0.02;',
+    '  float xc = treeX() + uSide * 0.02;',
     '  float g = hills(xc);',
     '  vec2 q = p - vec2(xc, g);',
-    '  if (abs(q.x) > 0.12 || q.y < -0.01 || q.y > 0.16) return 0.0;',
-    '  float d = sdCapsule(q, vec2(0.0, -0.01), vec2(0.003, 0.048), 0.0042, 0.0028);',
-    '  d = min(d, sdCapsule(q, vec2(0.003, 0.040), vec2(-0.026, 0.074), 0.0022, 0.0012));',
-    '  d = min(d, sdCapsule(q, vec2(0.003, 0.044), vec2(0.030, 0.080), 0.0020, 0.0011));',
-    '  d = min(d, sdCapsule(q, vec2(0.002, 0.046), vec2(0.004, 0.094), 0.0018, 0.0010));',
+    '  if (abs(q.x) > 0.13 || q.y < -0.01 || q.y > 0.17) return 0.0;',
+    '  float d = sdCapsule(q, vec2(0.0, -0.01), vec2(0.002, 0.050), 0.0046, 0.0030);',
+    '  d = min(d, sdCapsule(q, vec2(0.002, 0.042), vec2(-0.030, 0.078), 0.0024, 0.0012));',
+    '  d = min(d, sdCapsule(q, vec2(0.002, 0.046), vec2(0.034, 0.084), 0.0022, 0.0012));',
+    '  d = min(d, sdCapsule(q, vec2(0.002, 0.048), vec2(0.006, 0.100), 0.0020, 0.0010));',
     '  float c = 1e3;',
-    '  for (int i = 0; i < 7; i++) {',
+    '  for (int i = 0; i < 10; i++) {',
     '    float fi = float(i);',
     '    vec2 h = hash22(vec2(fi * 3.1 + uSeed.w, 7.7));',
-    '    float a = (fi / 6.0 - 0.5) * 2.4 + (h.x - 0.5) * 0.3;',
-    '    vec2 c0 = vec2(sin(a) * 0.050, 0.086 + cos(a) * 0.026 + (h.y - 0.5) * 0.012);',
-    '    float r = 0.021 + 0.010 * h.y + 0.006 * (1.0 - abs(fi / 6.0 - 0.5) * 2.0);',
-    '    c = min(c, length(q - c0) - r);',
+    '    float ring = i < 7 ? 1.0 : 0.4;',
+    '    float a = (i < 7 ? fi / 6.0 - 0.5 : (fi - 8.0) * 0.5) * 2.7 + (h.x - 0.5) * 0.3;',
+    '    vec2 c0 = vec2(sin(a) * 0.052 * ring + 0.006, 0.092 + cos(a) * 0.036 * ring + (h.y - 0.5) * 0.012);',
+    '    float r = 0.018 + 0.010 * h.y;',
+    '    c = smin(c, length(q - c0) - r, 0.008);',
     '  }',
-    '  // leafy edge and a few small gaps where the sky shows through',
-    '  float leaf = snoise(q * 140.0 + uSeed.w) * 0.5 + snoise(q * 300.0 - uSeed.w) * 0.25;',
-    '  c += 0.0035 * leaf;',
-    '  float gaps = snoise(q * 70.0 + 3.0 + uSeed.w);',
-    '  c = max(c, -(0.006 - 0.010 * smoothstep(0.55, 0.85, gaps)));',
+    '  // leafy edge, never finer than ~3 px',
+    '  float lf = min(320.0, 0.3 / px);',
+    '  c += 0.0032 * (0.6 * snoise(q * 140.0 + uSeed.w) + 0.4 * snoise(q * lf - uSeed.w));',
     '  d = min(d, c);',
     '  return clamp(0.5 - d / px, 0.0, 1.0);',
     '}',
@@ -289,10 +305,12 @@
     'uniform float uPsf;       // natural star sigma, canvas px',
     'uniform float uSigMin;    // minimum star sigma, canvas px',
     'uniform float uPeakFloor; // keeps undersized stars from vanishing on small canvases',
-    'uniform float uFaintR2;   // early-out radius² for faint stars, canvas px²',
-    'uniform vec4 uVis;        // layer visibility: dust, faint, mid, bright',
-    'uniform vec2 uVis2;       // brilliant visibility, unused',
+    'uniform float uHalo;      // halo sigma of a bright star, canvas px',
+    'uniform vec3 uFaint;      // faint stars: sigma², window radius², peak scale',
+    'uniform vec4 uVis;        // layer visibility: faint, mid, bright, brilliant',
+    'uniform vec2 uVis2;       // haze visibility, unused',
     'uniform vec3 uMargin;     // cell margins (fraction) for the mid, bright, brilliant layers',
+    'uniform vec3 uReach2;     // their early-out radii², canvas px²',
     'uniform float uT;',
     'uniform float uFgH;',
     'uniform vec4 uMetA;       // meteor head (x, y), direction (x, y), screen heights',
@@ -301,75 +319,46 @@
     '',
     'float wnd(float d2, float r2) { float w = max(0.0, 1.0 - d2 / r2); return w * w; }',
     '',
-    '// blue-white … white … yellow … orange, normalised to equal luminance',
-    'vec3 tint(float h, float sat) {',
-    '  vec3 c = mix(vec3(0.64, 0.76, 1.00), vec3(1.00, 0.96, 0.91), smoothstep(0.0, 0.30, h));',
-    '  c = mix(c, vec3(1.00, 0.84, 0.62), smoothstep(0.62, 0.86, h));',
-    '  c = mix(c, vec3(1.00, 0.66, 0.40), smoothstep(0.93, 1.0, h));',
-    '  c /= dot(c, vec3(0.2126, 0.7152, 0.0722));',
-    '  return mix(vec3(1.0), c, sat);',
-    '}',
+    '// blue-white (h = 0) … white … orange (h = 1), luminance-neutral',
+    'vec3 tint(float h, float sat) { return vec3(1.0) + sat * (h - 0.42) * vec3(0.46, -0.05, -0.80); }',
     '',
     'float twinkle(float hA, float hB, float amp) {',
     '  return 1.0 + amp * (0.62 * sin(uT * (0.30 + 0.75 * hA) + 6.2831 * hB)',
     '                    + 0.38 * sin(uT * (0.85 + 0.6 * hB) + 6.2831 * hA));',
     '}',
     '',
-    '// One star; dv = offset from its centre in canvas px; I = peak at the natural PSF.',
-    'vec3 star(vec2 dv, float I, float hc, float tw) {',
+    FAINT_LAYER('faintStars', LAYERS.faint, 0),
+    FAINT_LAYER('hazeStars', LAYERS.haze, 101),
+    '',
+    '// Mid / bright stars: the core grows a little with brightness, plus a soft halo.',
+    'vec3 brightStar(vec2 dv, float I, float hc, float tw) {',
     '  float sig0 = uPsf * (1.0 + 0.22 * log2(max(1.0, I * 2.5)));',
     '  float sig = max(sig0, uSigMin);',
     '  float pk = I * max(sig0 * sig0 / (sig * sig), uPeakFloor);',
     '  float d2 = dot(dv, dv);',
     '  float s2 = sig * sig;',
     '  float v = pk * exp(-0.5 * d2 / s2) * wnd(d2, 16.0 * s2);',
-    '  if (I > 0.5) {',
-    '    float sh = max(uPsf, 0.4) * 4.5 * (1.0 + 0.35 * log2(I + 1.0));',
-    '    float h2 = sh * sh;',
-    '    v += 0.028 * I * exp(-0.5 * d2 / h2) * wnd(d2, 9.0 * h2);',
-    '  }',
-    '  return tint(hc, clamp(0.25 + 0.45 * I, 0.0, 0.85)) * v * tw;',
-    '}',
-    '',
-    '// Faint layers: the 2×2 nearest cells, star anywhere in its cell (no lattice).',
-    'vec3 layer4(vec2 q, float cell, float prob, float iMin, float uMin, float salt, float twAmp) {',
-    '  vec2 b = floor(q / cell - 0.5);',
-    '  vec3 acc = vec3(0.0);',
-    '  for (int j = 0; j < 2; j++) {',
-    '    for (int i = 0; i < 2; i++) {',
-    '      vec2 id = b + vec2(float(i), float(j));',
-    '      float h = hash12(id + salt);',
-    '      if (h < prob) {',
-    '        vec2 dv = (q - (id + hash22(id + salt + 31.7)) * cell) * uStarPx;',
-    '        if (dot(dv, dv) < uFaintR2) {',
-    '          float hI = hash12(id + salt + 7.13);',
-    '          float I = iMin * pow(mix(uMin, 1.0, hI), -0.8);',
-    '          float hc = fract(h * 7.31 / prob);',
-    '          acc += star(dv, I, hc, twinkle(hI, hc, twAmp));',
-    '        }',
-    '      }',
-    '    }',
-    '  }',
-    '  return acc;',
+    '  float sh = uHalo * (1.0 + 0.35 * log2(I + 1.0));',
+    '  float h2 = sh * sh;',
+    '  v += 0.028 * I * smoothstep(0.4, 0.9, I) * exp(-0.5 * d2 / h2) * wnd(d2, 9.0 * h2);',
+    '  return tint(hc, clamp(0.3 + 0.4 * I, 0.0, 0.85)) * v * tw;',
     '}',
     '',
     '// Sparse layers: one cell, the star kept a margin away from the edges (fits its halo).',
-    'vec3 layer1(vec2 q, float cell, float prob, float iMin, float uMin, float salt, float margin, float twAmp) {',
+    'vec3 layer1(vec2 q, float cell, float prob, float iMin, float uMin, float salt, float margin, float reach2, float twAmp) {',
     '  vec2 g = q / cell;',
     '  vec2 id = floor(g);',
     '  float h = hash12(id + salt);',
-    '  // constellations: bright stars clump a little',
-    '  float pr = prob * (0.35 + 1.3 * smoothstep(-0.5, 0.7, snoise((id + 0.5) * cell * 0.0031 + salt)));',
-    '  if (h >= pr) return vec3(0.0);',
-    '  vec2 pos = margin + (1.0 - 2.0 * margin) * hash22(id + salt + 31.7);',
-    '  vec2 dv = (g - id - pos) * cell * uStarPx;',
-    '  float hI = hash12(id + salt + 7.13);',
-    '  float I = iMin * pow(mix(uMin, 1.0, hI), -0.8);',
+    '  if (h >= prob) return vec3(0.0);',
+    '  vec2 dv = (g - id - margin - (1.0 - 2.0 * margin) * hash22(id + salt + 31.7)) * cell * uStarPx;',
+    '  if (dot(dv, dv) > reach2) return vec3(0.0);',
+    '  float u = h / prob;',
+    '  float I = iMin * pow(mix(uMin, 1.0, u), -0.8);',
     '  float hc = hash12(id + salt + 3.37);',
-    '  return star(dv, I, hc, twinkle(hI, hc, twAmp));',
+    '  return brightStar(dv, I, hc, twinkle(u, hc, twAmp));',
     '}',
     '',
-    LAYER_CALLS(),
+    SPARSE_LAYERS(),
     '',
     'vec3 meteor(vec2 P) {',
     '  vec2 d = P - uMetA.xy;',
@@ -392,16 +381,16 @@
     '  vec3 col = vec3(0.0);',
     '  if (fg.a < 0.999) {',
     '    float y = P.y;',
-    '    // sky: deep blue-black at the top, a little lighter and greener toward the horizon',
+    '    // sky: deep blue-black at the top, a little lighter toward the horizon',
     '    float k = clamp((y - 0.06) / 0.94, 0.0, 1.0);',
-    '    col = mix(vec3(0.0046, 0.0056, 0.0080), vec3(0.0011, 0.0014, 0.0030), pow(k, 0.5));',
-    '    // airglow: a faint band above the hills, with slow travelling waves',
-    '    float wave = 0.8 + 0.2 * snoise(vec2(P.x * 0.9 + uT * 0.0015 + uSeed.y, uT * 0.002));',
-    '    col += vec3(0.0014, 0.0030, 0.0021) * exp(-max(y - 0.11, 0.0) / 0.10) * wave;',
+    '    col = mix(vec3(0.0040, 0.0050, 0.0080), vec3(0.0007, 0.0010, 0.0027), pow(k, 0.45));',
+    '    // airglow: a faint green-teal band above the hills, with slow travelling waves',
+    '    float wave = 0.78 + 0.14 * sin(P.x * 3.1 + uT * 0.004 + uSeed.y) + 0.08 * sin(P.x * 7.3 - uT * 0.006 + 2.0 * uSeed.y);',
+    '    float ay = (y - 0.17) / 0.13;',
+    '    col += vec3(0.0013, 0.0034, 0.0026) * exp(-ay * ay) * wave;',
     '    // warm haze hugging the horizon (stronger toward a distant town)',
-    '    float tx = (P.x - uSeed.z) / 0.5;',
-    '    float town = 0.6 + 0.6 * exp(-tx * tx);',
-    '    col += vec3(0.0042, 0.0028, 0.0016) * exp(-max(y - 0.07, 0.0) / 0.045) * town;',
+    '    float tx = (P.x - uSeed.z) / 0.45;',
+    '    col += vec3(0.0060, 0.0038, 0.0019) * exp(-max(y - 0.07, 0.0) / 0.055) * (0.35 + 1.0 * exp(-tx * tx));',
     '',
     '    // the turning sky',
     '    vec2 v = P - uPole;',
@@ -410,7 +399,11 @@
     '    vec3 mw = pow(mwT.rgb, vec3(2.2));',
     '    float mwF = smoothstep(0.001, 0.028, dot(mw, vec3(0.3, 0.6, 0.1)));',
     '    float low = 1.0 - smoothstep(0.08, 0.42, y);',
+    '#ifdef NOSTARS',
+    '    vec3 st = vec3(0.0);',
+    '#else',
     '    vec3 st = stars(s * uStarScale, mwF, mwT.a, 1.0 + 1.6 * low);',
+    '#endif',
     '    // atmospheric extinction and reddening toward the horizon',
     '    vec3 ext = mix(vec3(1.0), vec3(0.42, 0.34, 0.26), low * low);',
     '    col += (mw + st) * ext;',
@@ -426,22 +419,53 @@
 
   function f(x) { var s = String(+x.toFixed(6)); return s.indexOf('.') < 0 && s.indexOf('e') < 0 ? s + '.0' : s; }
 
-  // The stars() function, with each layer's constants baked in (and its grid rotated so
-  // the lattices of different layers never line up).
-  function LAYER_CALLS() {
-    var D = LAYERS.dust, F = LAYERS.faint, M = LAYERS.mid, B = LAYERS.bright, X = LAYERS.brilliant;
+  // Faint stars: the 2×2 nearest cells, each star anywhere in its cell (no visible lattice).
+  // Constant size; the faintest gather in the Milky Way and vanish into its dust.
+  function FAINT_LAYER(name, L, salt) {
+    return [
+      'vec3 ' + name + '(vec2 q, float kDust, float kFaint, float twk) {',
+      '  vec2 b = floor(q * ' + f(1 / L.cell) + ' - 0.5);',
+      '  vec3 acc = vec3(0.0);',
+      '  for (int j = 0; j < 2; j++) {',
+      '    for (int i = 0; i < 2; i++) {',
+      '      vec2 id = b + vec2(float(i), float(j));',
+      '      float h = hash12(id + uSeed.x + ' + f(salt) + ');',
+      '      if (h < ' + f(L.prob) + ') {',
+      '        vec2 dv = (q - (id + hash22(id + uSeed.x + ' + f(salt + 31.7) + ')) * ' + f(L.cell) + ') * uStarPx;',
+      '        float d2 = dot(dv, dv);',
+      '        if (d2 < uFaint.y) {',
+      '          float u = h * ' + f(1 / L.prob) + ';',
+      '          float I = ' + f(L.iMin) + ' * pow(mix(' + f(uMinOf(L)) + ', 1.0, u), -0.8);',
+      '          float k = mix(kDust, kFaint, smoothstep(0.03, 0.09, I));',
+      '          float tw = 1.0 + twk * smoothstep(0.05, 0.2, I) * sin(uT * (0.35 + 0.9 * fract(u * 23.17)) + 6.2831 * fract(u * 57.31));',
+      '          acc += tint(fract(u * 13.71), 0.55) * (I * k * tw * exp(-0.5 * d2 / uFaint.x) * wnd(d2, uFaint.y));',
+      '        }',
+      '      }',
+      '    }',
+      '  }',
+      '  return acc * uFaint.z;',
+      '}'
+    ].join('\n');
+  }
+
+  // stars(): every layer, each grid rotated so the lattices never line up.
+  function SPARSE_LAYERS() {
+    var M = LAYERS.mid, B = LAYERS.bright, X = LAYERS.brilliant;
+    function call(L, q, salt, i, tw) {
+      return 'layer1(' + q + ', ' + f(L.cell) + ', ' + f(L.prob) + ', ' + f(L.iMin) + ', ' + f(uMinOf(L)) +
+        ', uSeed.x + ' + f(salt) + ', uMargin.' + 'xyz'[i] + ', uReach2.' + 'xyz'[i] + ', ' + tw + ')';
+    }
     return [
       'vec3 stars(vec2 q, float mwF, float dustT, float twk) {',
       '  vec3 c = vec3(0.0);',
-      '  if (uVis.x > 0.0) c += uVis.x * (0.04 + 2.6 * mwF) * dustT * layer4(q, ' + f(D.cell) + ', ' + f(D.prob) + ', ' + f(D.iMin) + ', ' + f(uMinOf(D)) + ', uSeed.x, 0.0);',
-      '  vec2 q1 = mat2(0.8, 0.6, -0.6, 0.8) * q + vec2(71.3, 19.1);',
-      '  if (uVis.y > 0.0) c += uVis.y * (0.6 + 0.9 * mwF) * mix(1.0, dustT, 0.75) * layer4(q1, ' + f(F.cell) + ', ' + f(F.prob) + ', ' + f(F.iMin) + ', ' + f(uMinOf(F)) + ', uSeed.x + 17.0, 0.05 * twk);',
-      '  vec2 q2 = mat2(0.28, -0.96, 0.96, 0.28) * q + vec2(-13.7, 41.9);',
-      '  if (uVis.z > 0.0) c += uVis.z * mix(1.0, dustT, 0.5) * layer1(q2, ' + f(M.cell) + ', ' + f(M.prob) + ', ' + f(M.iMin) + ', ' + f(uMinOf(M)) + ', uSeed.x + 29.0, uMargin.x, 0.07 * twk);',
-      '  vec2 q3 = mat2(-0.6, 0.8, -0.8, -0.6) * q + vec2(311.0, -97.0);',
-      '  if (uVis.w > 0.0) c += uVis.w * mix(1.0, dustT, 0.3) * layer1(q3, ' + f(B.cell) + ', ' + f(B.prob) + ', ' + f(B.iMin) + ', ' + f(uMinOf(B)) + ', uSeed.x + 43.0, uMargin.y, 0.08 * twk);',
-      '  vec2 q4 = mat2(0.96, 0.28, -0.28, 0.96) * q + vec2(-517.0, 233.0);',
-      '  if (uVis2.x > 0.0) c += uVis2.x * layer1(q4, ' + f(X.cell) + ', ' + f(X.prob) + ', ' + f(X.iMin) + ', ' + f(uMinOf(X)) + ', uSeed.x + 59.0, uMargin.z, 0.08 * twk);',
+      '  float kDust = (0.07 + 3.6 * mwF) * dustT;',
+      '  float kFaint = (0.6 + 0.9 * mwF) * mix(1.0, dustT, 0.75);',
+      '  if (uVis.x > 0.0) c += uVis.x * faintStars(q, kDust, kFaint, 0.05 * twk);',
+      '  // the Milky Way is made of countless faint stars',
+      '  if (mwF > 0.03 && uVis2.x > 0.0) c += uVis2.x * (2.6 * mwF * dustT) * hazeStars(q * mat2(0.6, 0.8, -0.8, 0.6), 1.0, 1.0, 0.0);',
+      '  if (uVis.y > 0.0) c += uVis.y * mix(1.0, dustT, 0.5) * ' + call(M, 'mat2(0.28, -0.96, 0.96, 0.28) * q + vec2(-13.7, 41.9)', 29, 0, '0.07 * twk') + ';',
+      '  if (uVis.z > 0.0) c += uVis.z * mix(1.0, dustT, 0.3) * ' + call(B, 'mat2(-0.6, 0.8, -0.8, -0.6) * q + vec2(311.0, -97.0)', 43, 1, '0.08 * twk') + ';',
+      '  if (uVis.w > 0.0) c += uVis.w * ' + call(X, 'mat2(0.96, 0.28, -0.28, 0.96) * q + vec2(-517.0, 233.0)', 59, 2, '0.08 * twk') + ';',
       '  return c;',
       '}'
     ].join('\n');
@@ -471,7 +495,7 @@
         theta0: (-33 + (rand() - 0.5) * 10) * Math.PI / 180,   // band starts down-left of the pole
         poleX: (rand() - 0.5) * 0.10,
         coreR: 0.84 + rand() * 0.05,                            // core distance from the pole (screen heights)
-        nearPole: (6 + rand() * 5) * Math.PI / 180,              // galactic plane passes this close to the pole
+        nearPole: (8 + rand() * 4) * Math.PI / 180,              // galactic plane passes this close to the pole
         off: [rand() * 40, rand() * 40, rand() * 40],
         fg: [rand() * 100, rand() * 100, rand() * 100, rand() * 100],
         side: (env.seed | 0) % 2 === 0 ? -1 : 1,
@@ -483,9 +507,12 @@
 
       // Galactic frame in the celestial frame (z = pole; sky-plane x/y at rotation 0).
       // The core sits straight "below" the pole at rotation 0; theta0 swings it down-left.
+      // The plane passes the pole on the side that will face down an hour in (the band then
+      // arches across the top of the screen instead of leaving it), so the Milky Way stays in
+      // view for the first ~2 hours of a session.
       var rc = S.coreR * SKY_K;
       var gc = [0, -Math.sin(rc), Math.cos(rc)];
-      var pn = [Math.sin(S.nearPole), 0, Math.cos(S.nearPole)];
+      var pn = [-Math.sin(S.nearPole), 0, Math.cos(S.nearPole)];
       var ngp = norm(cross(gc, pn));
       var e2 = cross(ngp, gc);
       var riftSign = e2[2] >= 0 ? 1 : -1;
@@ -522,7 +549,7 @@
       var tri = G.fullscreenTriangle(gl);
       var pMW = G.createProgram(gl, G.FULLSCREEN_VS, HEADER + lib + MW_FS);
       var pFG = G.createProgram(gl, G.FULLSCREEN_VS, HEADER + lib + FG_FS);
-      var pMain = G.createProgram(gl, G.FULLSCREEN_VS, HEADER + lib + MAIN_FS);
+      var pMain = G.createProgram(gl, G.FULLSCREEN_VS, HEADER + (window.__nightDefs || '') + lib + MAIN_FS);
 
       var rtMW = null, rtFG = null, geo = null, builtKey = '';
 
@@ -545,26 +572,31 @@
         var vs = Math.max(1, Math.sqrt(SMALL_REF / cssH));    // miniaturise the field on small canvases
         var starPx = pr / vs;                                // canvas px per star px
         var psf = PSF_CSS * pr;
-        var sigFaint = Math.max(psf * 1.25, SIG_MIN);
+        var halo = Math.max(psf, 0.4) * 4.5;
+        var sigFaint = Math.max(psf * 1.1, SIG_MIN);
         var faintReach = 4 * sigFaint;
-        function visFaint(L) { return U.smoothstep(2.0, 2.7, L.cell * starPx / faintReach); }
+        // a layer fades out when its cells get too small (in canvas px) to hold its stars
+        var visFaint = U.smoothstep(2.0, 2.7, LAYERS.faint.cell * starPx / faintReach);
+        var visHaze = U.smoothstep(2.0, 2.7, LAYERS.haze.cell * starPx / faintReach);
         function reachOf(L) {
           var I = L.iMax;
           var sig = Math.max(psf * (1 + 0.22 * Math.log2(Math.max(1, I * 2.5))), SIG_MIN);
-          var sh = Math.max(psf, 0.4) * 4.5 * (1 + 0.35 * Math.log2(I + 1));
+          var sh = halo * (1 + 0.35 * Math.log2(I + 1));
           return Math.max(4 * sig, 3 * sh) + 0.5;
         }
-        function marginOf(L) { return reachOf(L) / (L.cell * starPx); }
-        function visOne(m) { return 1 - U.smoothstep(0.30, 0.44, m); }
-        var mM = marginOf(LAYERS.mid), mB = marginOf(LAYERS.bright), mX = marginOf(LAYERS.brilliant);
+        function visOne(L) { return 1 - U.smoothstep(0.30, 0.44, reachOf(L) / (L.cell * starPx)); }
+        function marginOf(L) { return Math.min(reachOf(L) / (L.cell * starPx), 0.44); }
+        function reach2(L) { var r = reachOf(L); return r * r; }
+        var M = LAYERS.mid, B = LAYERS.bright, X = LAYERS.brilliant;
         geo = {
           w: w, h: h, aspect: aspect, pole: pole, R: R,
-          starScale: cssH * vs, starPx: starPx, psf: psf,
-          faintR2: faintReach * faintReach,
+          starScale: cssH * vs, starPx: starPx, psf: psf, halo: halo,
           peakFloor: 0.45,
-          vis: [visFaint(LAYERS.dust), visFaint(LAYERS.faint), visOne(mM), visOne(mB)],
-          vis2: [visOne(mX), 0],
-          margin: [Math.min(mM, 0.44), Math.min(mB, 0.44), Math.min(mX, 0.44)],
+          faint: [sigFaint * sigFaint, faintReach * faintReach, Math.max(Math.pow(psf * 1.1 / sigFaint, 2), 0.45)],
+          vis: [visFaint, visOne(M), visOne(B), visOne(X)],
+          vis2: [visHaze, 0],
+          margin: [marginOf(M), marginOf(B), marginOf(X)],
+          reach2: [reach2(M), reach2(B), reach2(X)],
           fgRows: Math.max(2, Math.ceil(h * FG_FRAC))
         };
       }
@@ -650,10 +682,12 @@
             .set('uPsf', geo.psf)
             .set('uSigMin', SIG_MIN)
             .set('uPeakFloor', geo.peakFloor)
-            .set('uFaintR2', geo.faintR2)
+            .set('uHalo', geo.halo)
+            .set('uFaint', geo.faint)
             .set('uVis', geo.vis)
             .set('uVis2', geo.vis2)
             .set('uMargin', geo.margin)
+            .set('uReach2', geo.reach2)
             .set('uT', t + S.timeOff)
             .set('uFgH', geo.fgRows / geo.h)
             .set('uMetA', met)

@@ -168,7 +168,7 @@
     var out = [];
     for (var i = 0; i < n; i++) {
       var c = document.createElement('canvas');
-      c.width = 480; c.height = 320;
+      c.width = 360; c.height = 240;
       var g = c.getContext('2d');
       var hue = (i * 41 + 195) % 360;
       var grad = g.createLinearGradient(0, 0, 0, c.height);
@@ -187,7 +187,7 @@
         g.beginPath();
         g.moveTo(0, c.height);
         for (var x = 0; x <= c.width; x += 12) {
-          g.lineTo(x, c.height * (0.55 + k * 0.1) - 40 * Math.sin(x * 0.012 + i + k * 1.7) - 18 * Math.sin(x * 0.035 + k));
+          g.lineTo(x, c.height * (0.55 + k * 0.1) - 30 * Math.sin(x * 0.016 + i + k * 1.7) - 13 * Math.sin(x * 0.047 + k));
         }
         g.lineTo(c.width, c.height);
         g.fill();

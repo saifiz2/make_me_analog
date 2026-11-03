@@ -42,7 +42,8 @@
   var CONTAIN_ZOOM = 1.045;         // whole-photo ("print") mode breathes much less
   var COVER_RATIO = [0.7, 2.2];     // photo aspect / screen aspect inside this → cover-fit
   var PRINT_BOX = [0.86, 0.82];     // print mode: max share of screen width / height at zoom 1
-  var MAX_TRAVEL = 0.26;            // max pan per photo, as a share of the screen's long side
+  var MAX_TRAVEL = 0.26;
+  var BLEED = 1;                    // css px a cover-fitted photo always extends past each screen edge            // max pan per photo, as a share of the screen's long side
   var PRESCALE_OVER = 1.4;          // pre-scale photos more than this much larger than needed
   var MAX_CANVAS = 6144;            // never allocate pre-scaled canvases larger than this
   var LOAD_TIMEOUT_MS = 20000;
@@ -308,17 +309,20 @@
       var slidesEl = div('gal-slides', 'position:absolute;inset:0;overflow:hidden;');
 
       var finish = div('gal-finish', 'position:absolute;inset:0;pointer-events:none;');
-      var grain = grainTile();
-      var layers = [], sizes = [], repeats = [];
-      if (grain) { layers.push('url("' + grain + '")'); sizes.push('160px 160px'); repeats.push('repeat'); }
-      layers.push('radial-gradient(ellipse at 50% 46%, rgba(0,0,0,0.04) 0%, rgba(0,0,0,0.05) 38%, rgba(0,0,0,0.12) 54%, ' +
-        'rgba(0,0,0,0.25) 68%, rgba(0,0,0,0.40) 82%, rgba(0,0,0,0.56) 100%)');
-      sizes.push('100% 100%'); repeats.push('no-repeat');
-      layers.push('linear-gradient(to top, rgba(0,0,0,0.20) 0%, rgba(0,0,0,0.09) 14%, rgba(0,0,0,0) 30%)');
-      sizes.push('100% 100%'); repeats.push('no-repeat');
-      finish.style.backgroundImage = layers.join(',');
-      finish.style.backgroundSize = sizes.join(',');
-      finish.style.backgroundRepeat = repeats.join(',');
+      var VIGNETTE = 'radial-gradient(ellipse at 50% 46%, rgba(0,0,0,0.04) 0%, rgba(0,0,0,0.05) 38%, rgba(0,0,0,0.12) 54%, ' +
+        'rgba(0,0,0,0.25) 68%, rgba(0,0,0,0.40) 82%, rgba(0,0,0,0.56) 100%)';
+      var FLOOR = 'linear-gradient(to top, rgba(0,0,0,0.20) 0%, rgba(0,0,0,0.09) 14%, rgba(0,0,0,0) 30%)';
+      var finishGrain = null;
+      /** Vignette + floor shade always; grain only when the stage is big enough for 1 px grain to read as film. */
+      function styleFinish() {
+        var grain = W() >= 600 && H() >= 360 ? grainTile() : '';
+        if (grain === finishGrain) return;
+        finishGrain = grain;
+        finish.style.backgroundImage = (grain ? 'url("' + grain + '"),' : '') + VIGNETTE + ',' + FLOOR;
+        finish.style.backgroundSize = (grain ? '160px 160px,' : '') + '100% 100%,100% 100%';
+        finish.style.backgroundRepeat = (grain ? 'repeat,' : '') + 'no-repeat,no-repeat';
+      }
+      styleFinish();
 
       root.appendChild(empty);
       root.appendChild(slidesEl);
@@ -332,7 +336,7 @@
       var forceNext = false, firstShown = false;
       var lastT = NaN, clock = 0;
       var emptyAmt = 0, emptyTarget = 0, slidesAmt = 1, noImagesSince = 0;
-      var emptyShown = false, lastEmptyDraw = -1, lastMsgKey = '';
+      var emptyShown = false, lastEmptyDraw = -1, lastEmptyT = NaN, lastMsgKey = '';
 
       function W() { return Math.max(1, env.cssWidth || 1); }
       function H() { return Math.max(1, env.cssHeight || 1); }
@@ -475,14 +479,15 @@
         var L = { w: w, h: h, kind: (r >= COVER_RATIO[0] && r <= COVER_RATIO[1]) ? 'cover' : 'contain' };
         var k;
         if (L.kind === 'cover') {
-          k = Math.max(w / s.iw, h / s.ih);
+          var wb = w + 2 * BLEED, hb = h + 2 * BLEED;      // overhang the edges so no sub-pixel sliver shows
+          k = Math.max(wb / s.iw, hb / s.ih);
           L.cw = s.iw * k; L.ch = s.ih * k;
           L.zref = m.zmax * 1.03;
           var zf = m.zmax;                                    // the focal point is reached at the deep end
           var zo = m.zoomIn ? 1.0 : 1.015;                    // the wide end
           L.z0 = m.zoomIn ? zo : zf; L.z1 = m.zoomIn ? zf : zo;
           var f = m.focal || [0.5, 0.5];
-          var sxf = Math.max(0, 0.5 - w / (2 * L.cw * zf)), syf = Math.max(0, 0.5 - h / (2 * L.ch * zf));
+          var sxf = Math.max(0, 0.5 - wb / (2 * L.cw * zf)), syf = Math.max(0, 0.5 - hb / (2 * L.ch * zf));
           var ufx = sxf > 1e-4 ? clamp((f[0] - 0.5) / sxf, -1, 1) : 0;
           var ufy = syf > 1e-4 ? clamp((f[1] - 0.5) / syf, -1, 1) : 0;
           var uox = clamp(-ufx * 0.35 + m.jx, -1, 1), uoy = clamp(-ufy * 0.35 + m.jy, -1, 1);
@@ -556,13 +561,13 @@
         softBlur(c, 2);
         c = upscale(c, tw * 2, th * 2); softBlur(c, 2);
         c = upscale(c, tw * 4, th * 4); softBlur(c, 1);
-        c = upscale(c, tw * 8, th * 8);
+        c = upscale(c, tw * 8, th * 8); softBlur(c, 1);
         var g = ctx2d(c);
         if (g) {
           g.globalAlpha = 1;
           try { g.globalCompositeOperation = 'saturation'; g.fillStyle = 'rgba(128,128,128,0.08)'; g.fillRect(0, 0, c.width, c.height); } catch (e) { /* ignore */ }
           g.globalCompositeOperation = 'source-over';
-          g.fillStyle = 'rgba(6,7,11,0.44)';
+          g.fillStyle = 'rgba(6,7,11,0.47)';
           g.fillRect(0, 0, c.width, c.height);
         }
         c.className = 'gal-backdrop';
@@ -591,7 +596,7 @@
         if (L.kind === 'cover') {
           var z = clamp(L.z0 * Math.pow(L.z1 / L.z0, p), 1, L.zref);
           var dw = L.cw * z, dh = L.ch * z;
-          var sx = Math.max(0, 0.5 - w / (2 * dw)), sy = Math.max(0, 0.5 - h / (2 * dh));
+          var sx = Math.max(0, 0.5 - (w + 2 * BLEED) / (2 * dw)), sy = Math.max(0, 0.5 - (h + 2 * BLEED) / (2 * dh));
           var ux = clamp(lerp(L.u0x, L.u1x, p), -1, 1), uy = clamp(lerp(L.u0y, L.u1y, p), -1, 1);
           var cx = 0.5 + ux * sx, cy = 0.5 + uy * sy;
           var x = w / 2 - cx * dw, y = h / 2 - cy * dh;
@@ -710,6 +715,7 @@
       // ── frame ──
       return {
         resize: function () {
+          styleFinish();
           sizeEmptyCanvas();
           styleMessage();
           relayout();
@@ -783,7 +789,7 @@
             if (!emptyShown) { empty.style.visibility = 'visible'; emptyShown = true; }
             setOpacity(empty, ease(emptyAmt), 'op', empty);
             var interval = env.quality === 'saver' ? 1 / 12 : 1 / 20;   // drifts far below a texel per redraw
-            if (lastEmptyDraw < 0 || clock - lastEmptyDraw >= interval || frozen) { drawEmpty(t); lastEmptyDraw = clock; }
+            if (lastEmptyDraw < 0 || (t !== lastEmptyT && clock - lastEmptyDraw >= interval)) { drawEmpty(t); lastEmptyDraw = clock; lastEmptyT = t; }
           } else if (emptyShown) {
             empty.style.visibility = 'hidden';
             setOpacity(empty, 0, 'op', empty);

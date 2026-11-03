@@ -2,30 +2,36 @@
  * Analog Brick — "Pulse" visual mode (id "pulse").
  *
  * A luminous ring hanging in a slow nebula, crowned by 64 soft filaments of light that
- * move with the music — something between a solar eclipse corona and a dandelion.
+ * move with the music — something between a solar-eclipse corona and a dandelion.
  *
  *   • ring       a thin, warm ring of light around a dark disc; its radius breathes with
- *                the (smoothed) bass, and with a slow breath when nothing is playing.
+ *                the (smoothed) bass, and with a slow 11 s breath when nothing is playing.
  *   • filaments  the 32 spectrum bands, mirrored left/right → 64 tapered, glowing threads
- *                that curve gently upward like petals, each ending in a soft bead.
- *                A continuous corona (the same bands, linearly filtered) glows behind them.
- *   • ripples    faint rings released on beats (and once per breath when idle) that drift
- *                outward, fade, and gently refract the nebula as they pass.
- *   • nebula     domain-warped fbm gas in the palette's deep tones, rendered at reduced
- *                resolution; its brightness and flow follow the music's energy.
+ *                that curve gently upward like lotus petals, sway a little, and end in a
+ *                soft bead. A fibrous corona (the same bands, linearly filtered) glows
+ *                behind them, so tiny thumbnails still read as a soft halo.
+ *   • ripples    faint rings released on beats (≈ every other beat; once per breath when
+ *                idle) that drift outward, mostly lighting up the gas they pass through and
+ *                gently refracting it.
+ *   • pollen     sparse motes drifting slowly outward from the ring (log-polar cells).
+ *   • nebula     domain-warped fbm gas in the palette's deep tones at reduced resolution;
+ *                its brightness, flow and the flower's slow rotation follow the energy.
  *
  * Audio: env.audio (bands/bass/level/energy/beat/beatCount). The bands are smoothed again,
  * tilt-compensated and lightly self-normalised, then uploaded every frame as a 32×1
- * LUMINANCE texture. Colours come from env.palette (album art) and crossfade over ~2 s
- * when the track changes; the default is deep indigo, magenta and amber.
+ * LUMINANCE/UNSIGNED_BYTE texture. Colours come from env.palette (album art) as six roles
+ * (deep, two nebula tones at a fixed dark luminance, ring/root glow, tip glow, ring core)
+ * and crossfade over 2 s when palette.version changes; the default is deep indigo,
+ * magenta and amber.
  *
- * Photosensitivity: beats only nudge the ring's glow (≤ ~12 %) and release dim ripples;
- * there is no full-screen flash and nothing strobes.
+ * Photosensitivity: beats nudge the ring's glow by ≤ 8 % and release dim ripples; band
+ * attacks are softened. Measured whole-frame luminance swing with synthetic audio is
+ * ≈ 11 % per second and ≤ 3.5 % frame to frame — no flashes, nothing strobes.
  *
  * State is integrated from differences in t (not dt), so a frozen stage renders a still.
  *
- * Passes (WebGL1, GLSL ES 1.00): 1. nebula → half-res RGBA8 (sqrt-encoded, dithered)
- *                                2. composite at canvas resolution.
+ * Passes (WebGL1, GLSL ES 1.00): 1. nebula → ~0.45× RGBA8 target (sqrt-encoded, dithered)
+ *                                2. composite at canvas resolution (tonemap + dither).
  */
 (function (global) {
   'use strict';
@@ -328,22 +334,46 @@
       if (hueDist(x.h, A.h) > 0.05 && sc > best) { best = sc; B = x; }
     });
     var hA = A.h, sA = U.clamp(A.s, 0.45, 0.85);
-    var hB = B ? B.h : hA + 0.07, sB = B ? U.clamp(B.s, 0.38, 0.85) : sA;
-    // Nebula: the most dominant colourful tone, and a second one near it.
-    var N1 = vivid.slice().sort(function (a, b) { return a.i - b.i; })[0];
-    var N2 = null;
-    vivid.forEach(function (x) { if (!N2 && x !== N1 && hueDist(x.h, N1.h) > 0.04) N2 = x; });
-    var h1 = N1.h, s1 = U.clamp(N1.s, 0.30, 0.70);
-    var h2 = N2 ? N2.h : h1 + 0.06, s2 = N2 ? U.clamp(N2.s, 0.28, 0.65) : s1;
     var glowA = U.hslToRgb(hA, sA, 0.64);
+    // tips: the most contrasting colour, else a paler version of the ring colour
+    var glowB = B ? U.hslToRgb(B.h, U.clamp(B.s, 0.38, 0.85), 0.68) : U.hslToRgb(hA + 0.03, sA * 0.55, 0.78);
+    // Nebula: the most dominant colourful tone and an analogous partner, at a fixed
+    // (dark) luminance so every album sits as quietly as the default.
+    var N1 = vivid.slice().sort(function (a, b) { return a.i - b.i; })[0];
+    var h1 = nebHue(N1.h), s1 = U.clamp(N1.s, 0.30, 0.60);
+    var N2 = null;
+    vivid.forEach(function (x) {
+      var dd = hueDist(nebHue(x.h), h1);
+      if (!N2 && x !== N1 && dd > 0.04 && dd < 0.22) N2 = x;
+    });
+    var h2 = N2 ? nebHue(N2.h) : nebHue(h1 + (h1 + 0.07 > 0.12 && h1 + 0.07 < 0.30 ? -0.07 : 0.07));
+    var s2 = N2 ? U.clamp(N2.s, 0.28, 0.60) : s1 * 0.9;
     return {
       deep: U.hslToRgb(h1, 0.55, 0.035),
-      neb1: U.hslToRgb(h1, s1, 0.42),
-      neb2: U.hslToRgb(h2, s2, 0.40),
+      neb1: atLuminance(h1, s1, 0.075),
+      neb2: atLuminance(h2, s2, 0.090),
       glowA: glowA,
-      glowB: U.hslToRgb(hB, sB, 0.68),
+      glowB: glowB,
       core: U.mixRgb(glowA, [1, 0.97, 0.92], 0.62)
     };
+  }
+
+  /** Keep nebula hues out of the yellow–olive band, which turns muddy when dark. */
+  function nebHue(h) {
+    h = h - Math.floor(h);
+    if (h > 0.12 && h < 0.30) return h < 0.21 ? 0.09 : 0.33;
+    return h;
+  }
+
+  /** Display-space colour of hue h / saturation s whose linear luminance is ≈ target. */
+  function atLuminance(h, s, target) {
+    var U = BV.util, lo = 0.02, hi = 0.75, rgb = null;
+    for (var i = 0; i < 14; i++) {
+      var mid = (lo + hi) / 2;
+      rgb = U.hslToRgb(h, s, mid);
+      if (U.luminance(toLinear(rgb)) > target) hi = mid; else lo = mid;
+    }
+    return rgb;
   }
 
   var ROLE_KEYS = ['deep', 'neb1', 'neb2', 'glowA', 'glowB', 'core'];

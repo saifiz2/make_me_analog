@@ -81,6 +81,7 @@
     inited: false,
     busy: false,
     startPending: false,
+    startSent: false,
     pinTouched: false,
     confirmTouched: false,
     pinVisible: false,
@@ -321,13 +322,41 @@
         tstage.setMode(id, { transition: 0 });
         var layer = host.querySelector('.bv-mode-' + id);
         var canvas = layer && layer.querySelector('canvas');
-        if (canvas && canvas.width > 1) setThumb(id, canvas.toDataURL('image/jpeg', 0.88));
+        if (canvas && canvas.width > 1) setThumb(id, captureThumb(canvas));
       } catch (err) {
         console.warn('[setup] could not render a still of "' + id + '"', err);
       }
       setTimeout(next, 140);
     }
     setTimeout(next, 1200);
+  }
+
+  /**
+   * Copy a just-rendered canvas into a JPEG data URL. Very dark stills (fine threads, night skies)
+   * vanish at tile size, so lift their exposure a little (a gain on linear-ish values, capped).
+   * Must run in the same task as the render: WebGL buffers are not preserved.
+   */
+  function captureThumb(src) {
+    var w = src.width, h = src.height;
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    var g = c.getContext('2d');
+    g.drawImage(src, 0, 0);
+    try {
+      var img = g.getImageData(0, 0, w, h), d = img.data, sum = 0, n = 0;
+      for (var i = 0; i < d.length; i += 16) { sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]; n++; }
+      var mean = sum / Math.max(1, n) / 255;
+      var gain = Math.min(1.9, Math.max(1, 0.15 / Math.max(0.01, mean)));
+      if (gain > 1.05) {
+        for (var k = 0; k < d.length; k += 4) {
+          d[k] = Math.min(255, d[k] * gain);
+          d[k + 1] = Math.min(255, d[k + 1] * gain);
+          d[k + 2] = Math.min(255, d[k + 2] * gain);
+        }
+        g.putImageData(img, 0, 0);
+      }
+    } catch (e) { /* tainted or unsupported: keep the plain copy */ }
+    return c.toDataURL('image/jpeg', 0.88);
   }
 
   /** Give a frozen thumbnail stage a plausible moment of music (Pulse reads env.audio). */
@@ -562,6 +591,7 @@
   }
 
   function clearPins() {
+    S.startSent = false;
     $('pin1').value = '';
     $('pin2').value = '';
     S.pinTouched = S.confirmTouched = false;
@@ -589,6 +619,7 @@
     clearError();
     S.busy = true;
     S.startPending = true;
+    S.startSent = true;
     renderPin();
     Brick.send('session.start', {
       durationMin: S.settings.durationMin,
@@ -1392,16 +1423,20 @@
   Brick.on('stats', function (st) {
     S.stats = st || null;
     renderStats();
-    // Stats arrive when a session ends and the window comes back: never keep the old PIN around.
-    S.startPending = false;
-    S.busy = false;
-    clearPins();
+    // Stats arrive when a session ends and the window comes back: never keep that session's PIN around.
+    // (They also arrive when the window is merely re-presented; a PIN being typed then is left alone.)
+    if (S.startSent) {
+      S.startPending = false;
+      S.busy = false;
+      clearPins();
+    }
   });
   Brick.on('gallery', applyGallery);
   Brick.on('error', function (p) {
     clearTimeout(busyTimer);
     S.busy = false;
     S.startPending = false;
+    S.startSent = false;
     showError(p && p.message);
     renderPin();
   });
@@ -1418,6 +1453,18 @@
   renderStats();
   renderReady();
   renderSummary();
+
+  // WebKit on macOS only Tabs between text fields unless the user has turned on system-wide keyboard
+  // navigation; controls with an explicit tabindex are always included. Keep every control reachable.
+  function ensureTabbable() {
+    Array.prototype.forEach.call(document.querySelectorAll('button, select, input[type="checkbox"], input[type="radio"], input[type="range"]'), function (n) {
+      if (!n.hasAttribute('tabindex')) n.setAttribute('tabindex', '0');
+    });
+  }
+  ensureTabbable();
+  if (typeof MutationObserver !== 'undefined') {
+    new MutationObserver(ensureTabbable).observe(document.body, { childList: true, subtree: true });
+  }
 
   // Small dev surface (used by the browser mock to open panels for screenshots).
   window.BrickSetup = {
