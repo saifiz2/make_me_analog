@@ -627,12 +627,11 @@ body.role-secondary .toast, body.is-idle .toast { bottom: calc(var(--edge) + 0.2
   animation: breathe 8s ease-in-out infinite;
 }
 .breathe i {
-  inset: 12%;
-  background: radial-gradient(circle at 50% 42%, rgba(214, 244, 233, 0.85), rgba(160, 220, 200, 0.5) 38%, rgba(147, 209, 189, 0.16) 66%, rgba(147, 209, 189, 0) 72%);
-  filter: blur(1px);
+  inset: 10%;
+  background: radial-gradient(circle at 50% 44%, rgba(222, 250, 238, 0.95), rgba(150, 226, 198, 0.72) 30%, rgba(120, 205, 175, 0.3) 58%, rgba(120, 205, 175, 0) 72%);
   animation: breathe-core 8s ease-in-out infinite;
 }
-@keyframes breathe-core { 0%, 100% { transform: scale(0.55); opacity: 0.55; } 50% { transform: scale(1); opacity: 1; } }
+@keyframes breathe-core { 0%, 100% { transform: scale(0.6); opacity: 0.7; } 50% { transform: scale(1); opacity: 1; } }
 @keyframes breathe { 0%, 100% { transform: scale(0.72); opacity: 0.65; } 50% { transform: scale(1); opacity: 1; } }
 .mv-cooldown .mv-body span:first-child { display: block; }
 
@@ -645,12 +644,18 @@ body.role-secondary .toast, body.is-idle .toast { bottom: calc(var(--edge) + 0.2
 }
 
 /* ───────────── Ending ───────────── */
+/* Two-phase outro: the room dims quickly (like lowering a lamp) so the message reads at once even over a
+   bright visual, then the rest of the light goes out. ~3 s in total; native removes the windows at ~3.5 s. */
 .fade-black {
   position: fixed; inset: 0; z-index: 25;
   background: #000; opacity: 0; pointer-events: none;
-  transition: opacity 3000ms cubic-bezier(0.45, 0, 0.3, 1);
 }
-.fade-black.is-on { opacity: 1; }
+.fade-black.is-on { animation: outro-dim 3000ms linear forwards; }
+@keyframes outro-dim {
+  0%   { opacity: 0;    animation-timing-function: cubic-bezier(0.3, 0, 0.4, 1); }
+  28%  { opacity: 0.58; animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
+  100% { opacity: 1; }
+}
 .ending {
   position: fixed; inset: 0; z-index: 30;
   display: grid; place-items: center;
@@ -658,6 +663,7 @@ body.role-secondary .toast, body.is-idle .toast { bottom: calc(var(--edge) + 0.2
   opacity: 0; visibility: hidden;
 }
 .ending.is-visible { opacity: 1; visibility: visible; transition: opacity 1200ms var(--ease); }
+
 .ending-inner { transform: translateY(10px); transition: transform 1600ms var(--ease); padding: 0 2rem; }
 .ending.is-visible .ending-inner { transform: none; }
 /* A single point of lamp light above the words (sage when the session ended early). */

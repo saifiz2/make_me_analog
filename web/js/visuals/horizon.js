@@ -8,14 +8,19 @@
  * soft clouds, a low sun (or moon) and a calm lake mirroring it all.
  *
  * Rendering (WebGL1, GLSL ES 1.00), three cheap passes:
- *   1. ridges   — per screen column, the height of each of the five ridges plus a fine and
- *                 a coarse slope, baked into a W×8 texture (16-bit packed heights). Ridges
- *                 drift sideways with slow parallax, so this is re-baked with the scene.
+ *   1. bake     — per screen column: the height and slope of each of the five ridges, the
+ *                 big-shape height of the two mountain ranges (for their two-tone faces) and
+ *                 the outline of three cloud layers, in a W×10 texture (16-bit packed
+ *                 heights). Ridges and clouds drift sideways with slow parallax, so this is
+ *                 re-baked whenever the scene is.
  *   2. scene    — everything above the waterline: sky gradient, sun / moon and their glow,
  *                 stars, clouds, ridges (two-tone lit faces, rim light, valley haze) and
  *                 drifting mist bands, rendered into a texture exactly the size of the
- *                 visible sky+land. The scene moves very slowly, so it is refreshed at a
- *                 modest rate (12–30 Hz by quality) instead of every frame.
+ *                 visible sky+land. The scene moves very slowly (well under a pixel per
+ *                 frame), so each frame re-renders only one horizontal strip of it, round
+ *                 robin (2–3 strips by quality, the bake refreshed with the first strip):
+ *                 every part of the scene still updates at 15–30 Hz, and the frame cost
+ *                 stays flat. Big time steps (warp, slow frames) render it whole.
  *   3. compose  — copies the scene above the waterline; below it, mirrors the scene with
  *                 perspective ripples, a soft vertical blur, wind streaks, a glitter path
  *                 under the sun / moon and shore mist; vignette, paper grain, dither.
@@ -44,11 +49,11 @@
   var SUN = { noon: 0.0, cx: 0.56, rx: 0.30, cy: 0.205, ry: 0.475, r: 0.030 };
   var MOON = { noon: 0.58, cx: 0.48, rx: 0.32, cy: 0.48, ry: 0.34, r: 0.021 };
 
-  // Per-quality budgets.
+  // Per-quality budgets: how many frames one full refresh of the scene is spread over.
   var Q = {
-    saver:    { hz: 12 },
-    balanced: { hz: 20 },
-    high:     { hz: 30 }
+    saver:    { strips: 2 },     // 30 fps cap → 15 Hz scene refresh
+    balanced: { strips: 3 },     // 60 fps cap → 20 Hz
+    high:     { strips: 2 }      // 60 fps cap → 30 Hz
   };
 
   // ───────────────────────────── palettes ─────────────────────────────
@@ -56,12 +61,12 @@
   // stars, moon, mist, light (two-tone ridge lighting), cloud (cloud cover bias).
   var KEYS = [
     { p: 0.00, name: 'golden',
-      zen: '#4f7db3', mid: '#e3b991', hor: '#f9cc8a', sun: '#fff6dc', glow: '#ffc277',
-      far: '#a996b4', near: '#1b2838', haze: '#efcfb4', cLit: '#fff0d6', cDark: '#a99aae', water: '#2b3d55',
+      zen: '#4874aa', mid: '#d9ab86', hor: '#f2c07e', sun: '#fff6dc', glow: '#ffc277',
+      far: '#9e8aac', near: '#1b2838', haze: '#e6c2a7', cLit: '#fff0d6', cDark: '#a99aae', water: '#2b3d55',
       glowAmt: 0.75, stars: 0, moon: 0, mist: 0.45, light: 0.6, cloud: 0.0 },
     { p: 0.07, name: 'late golden',
-      zen: '#4d6c9e', mid: '#e3ad8b', hor: '#ffc583', sun: '#ffe7b0', glow: '#ffb26b',
-      far: '#b98e9c', near: '#1e2536', haze: '#f2c3a0', cLit: '#ffd9b0', cDark: '#94809e', water: '#283551',
+      zen: '#46649a', mid: '#d99e7f', hor: '#f8b977', sun: '#ffe7b0', glow: '#ffb26b',
+      far: '#aa8295', near: '#1e2536', haze: '#e8b595', cLit: '#ffd9b0', cDark: '#94809e', water: '#283551',
       glowAmt: 0.9, stars: 0, moon: 0, mist: 0.45, light: 0.7, cloud: 0.03 },
     { p: 0.14, name: 'sunset',
       zen: '#38457a', mid: '#d88a7a', hor: '#ffa860', sun: '#ffcf8c', glow: '#ff9450',
@@ -92,12 +97,12 @@
       far: '#4c5a8b', near: '#0f142e', haze: '#8890b8', cLit: '#a69dc2', cDark: '#434b78', water: '#161f43',
       glowAmt: 0.2, stars: 0.35, moon: 0.5, mist: 0.8, light: 0.05, cloud: 0.04 },
     { p: 0.85, name: 'dawn',
-      zen: '#3b5590', mid: '#c99bb6', hor: '#ffc0a3', sun: '#ffe2bc', glow: '#ffae90',
-      far: '#a48db2', near: '#202949', haze: '#efc5c8', cLit: '#ffc7b6', cDark: '#8b80a9', water: '#2a3560',
+      zen: '#384f8a', mid: '#bf90ad', hor: '#f6b59a', sun: '#ffe2bc', glow: '#ffae90',
+      far: '#9883a9', near: '#202949', haze: '#e5b9bf', cLit: '#ffc7b6', cDark: '#8b80a9', water: '#2a3560',
       glowAmt: 0.55, stars: 0, moon: 0.1, mist: 0.85, light: 0.2, cloud: 0.05 },
     { p: 0.92, name: 'sunrise',
-      zen: '#5279b0', mid: '#eec0a3', hor: '#ffd39c', sun: '#fff0c8', glow: '#ffbe82',
-      far: '#b6a0b5', near: '#222d45', haze: '#f6d6bf', cLit: '#ffe0bd', cDark: '#a497b2', water: '#2d4262',
+      zen: '#4b70a8', mid: '#e3b296', hor: '#f8c58e', sun: '#fff0c8', glow: '#ffbe82',
+      far: '#a893ab', near: '#222d45', haze: '#ebc8b1', cLit: '#ffe0bd', cDark: '#a497b2', water: '#2d4262',
       glowAmt: 0.85, stars: 0, moon: 0, mist: 0.65, light: 0.55, cloud: 0.02 }
   ];
   var COLOR_FIELDS = ['zen', 'mid', 'hor', 'sun', 'glow', 'far', 'near', 'haze', 'cLit', 'cDark', 'water'];
@@ -187,7 +192,8 @@
   // y), B = fine slope dy/dX (±8, X in screen heights), A = skew of the shading spines.
   // Rows 5–7: cloud layers (low, mid, high). RG = packed top edge, B = thickness (×0.08),
   // A = end fade (0 = clear sky).
-  // Rows 8–9: coarse (big-shape) heights of ridges 0 and 1, used to shade their faces.
+  // Rows 8–9: slopes of the big shapes of ridges 0 and 1 (no small crags), measured over
+  // four window widths (RGBA = ±0.008, 0.025, 0.06, 0.12; ±1.5 → 0…1). They shade the faces.
   var RIDGE_FS = [
     'varying vec2 v_uv;',
     'uniform float uAspect;',
@@ -262,6 +268,14 @@
     '  h += 0.014 * head * snoise(vec2(x * 2.6, 5.5 + uSalt.w));   // headlands roll, never plateau',
     '  return h + trees(x, 0.0085, 0.017 + 0.008 * head, uSalt.z + 47.0);',
     '}',
+    'float coarse(float row, float x) {',
+    '  float c;',
+    '  if (row < 8.5) ridge0(x, c); else ridge1(x, c);',
+    '  return c;',
+    '}',
+    'float coarseSlope(float row, float x, float d) {',
+    '  return clamp((coarse(row, x + d) - coarse(row, x - d)) / (2.0 * d), -1.5, 1.5);',
+    '}',
     'float ridgeAt(float row, float x) {',
     '  float c;',
     '  if (row < 0.5) return ridge0(x + uDriftA.x, c);',
@@ -307,9 +321,9 @@
     '  float row = floor(v_uv.y * ' + RIDGE_ROWS.toFixed(1) + ');',
     '  float X = (v_uv.x - 0.5) * uAspect;',
     '  if (row > 7.5) {',
-    '    float c;',
-    '    if (row < 8.5) ridge0(X + uDriftA.x, c); else ridge1(X + uDriftA.y, c);',
-    '    gl_FragColor = vec4(pack16(c), 0.0, 0.0);',
+    '    float xr = X + (row < 8.5 ? uDriftA.x : uDriftA.y);',
+    '    gl_FragColor = vec4(coarseSlope(row, xr, 0.008), coarseSlope(row, xr, 0.025),',
+    '                        coarseSlope(row, xr, 0.06), coarseSlope(row, xr, 0.12)) / 3.0 + 0.5;',
     '    return;',
     '  }',
     '  if (row > 4.5) {',
@@ -412,17 +426,18 @@
     '  float ds = length(P - S);',
     '',
     '  // the farthest ridge that matters here: the nearest one fully covering the pixel',
+    '  vec4 R[5];',
     '  float start = -1.0;',
     '  for (int i = 0; i < 5; i++) {',
-    '    float hh = unpack16(texture2D(uRidge, vec2(v_uv.x, rowV(float(i)))).rg);',
-    '    if (hh - y > 6.0 * uPx) start = float(i);',
+    '    R[i] = texture2D(uRidge, vec2(v_uv.x, rowV(float(i))));',
+    '    if (unpack16(R[i].rg) - y > 6.0 * uPx) start = float(i);',
     '  }',
     '',
     '  vec3 col = vec3(0.0);',
     '  if (start < 0.0) {',
     '    // sky',
-    '    vec3 lo = mixL(uHor, uMid, smoothstep(0.47, 0.80, y));',
-    '    col = mixL(lo, uZen, smoothstep(0.66, 1.06, y));',
+    '    vec3 lo2 = mix(uHor * uHor, uMid * uMid, smoothstep(0.47, 0.80, y));',
+    '    col = sqrt(mix(lo2, uZen * uZen, smoothstep(0.66, 1.06, y)));',
     '    // sun glow (screen-blended: soft, never clips)',
     '    float glow = uSun.w * (0.7 * exp(-ds * 26.0) + 0.32 * exp(-ds * 7.0) + 0.22 * exp(-ds * 2.6)',
     '               + 0.20 * exp(-length((P - S) * vec2(0.32, 2.4)) * 3.0));',
@@ -467,27 +482,25 @@
     '    float fi = float(i);',
     '    if (fi < start) continue;',
     '    float k = fi / 4.0;',
-    '    float rv = rowV(fi);',
-    '    vec4 r = texture2D(uRidge, vec2(v_uv.x, rv));',
+    '    vec4 r = R[i];',
     '    float h = unpack16(r.rg);',
     '    float sf = (r.b - 0.5) * 16.0;',
     '    float dd = h - y;',
     '    float cov = clamp(dd / (uPx * sqrt(1.0 + sf * sf)) + 0.5, 0.0, 1.0);',
     '    float c = 0.49 - 0.05 * fi;     // valley floor in front of this ridge',
     '    if (cov > 0.0) {',
-    '      vec3 rc = mix(uFar, uNear, pow(k, 0.9));',
+    '      vec3 rc = mix(uFar, uNear, k * (1.1 - 0.1 * k));',
     '      // two-tone faces: secant slope over a window that widens with depth below the crest,',
     '      // so the lit / shaded split runs down from each peak like a spine',
     '      float fogT = smoothstep(c + 0.04, c - 0.02, y);',
-    '      if (i < 2) {',
+    '      if (i < 2 && uAmt.z > 0.01) {',
     '        float dp = max(dd, 0.0);',
     '        float ux = v_uv.x + dp * r.a * 1.2 / uAspect;',
     '        float dl = 0.008 + dp * 0.3;',
-    '        float du = dl / uAspect;',
-    '        float cv = rowV(8.0 + fi);',
-    '        float hl = unpack16(texture2D(uRidge, vec2(ux - du, cv)).rg);',
-    '        float hr = unpack16(texture2D(uRidge, vec2(ux + du, cv)).rg);',
-    '        float s = (hr - hl) / (2.0 * dl);',
+    '        vec4 S4 = (texture2D(uRidge, vec2(ux, rowV(8.0 + fi))) - 0.5) * 3.0;',
+    '        float s = dl < 0.025 ? mix(S4.x, S4.y, (dl - 0.008) / 0.017)',
+    '                : dl < 0.06 ? mix(S4.y, S4.z, (dl - 0.025) / 0.035)',
+    '                : mix(S4.z, S4.w, min((dl - 0.06) / 0.06, 1.0));',
     '        float sideL = clamp((uLight.x - X) * 2.5, -1.0, 1.0);',
     '        float lit = smoothstep(-0.08, 0.08, -s * sideL);',
     '        float la = uAmt.z * (1.0 - 0.45 * k) * abs(sideL) * exp(-dp * 7.0) * (1.0 - fogT);',
@@ -499,13 +512,15 @@
     '      float fog = fogT * uAmt.y * mix(0.7, 0.35, k);',
     '      rc = mixL(rc, uHaze, fog);',
     '      // the crest catches the light near the sun',
-    '      float rim = exp(-max(dd, 0.0) / 0.003) * exp(-ds * 4.0) * uSun.w * (1.0 - 0.8 * k);',
-    '      rc = screen(rc, uGlowCol * rim * 0.55);',
+    '      if (uSun.w > 0.01 && dd < 0.02) {',
+    '        float rim = exp(-max(dd, 0.0) / 0.003 - ds * 4.0) * uSun.w * (1.0 - 0.8 * k);',
+    '        rc = screen(rc, uGlowCol * rim * 0.55);',
+    '      }',
     '      col = mix(col, rc, cov);',
     '    }',
     '    if (i < 4) {',
     '      float band = smoothstep(c + 0.045, c + 0.008, y) * smoothstep(c - 0.03, c - 0.002, y);',
-    '      if (band > 0.001) {',
+    '      if (band * uAmt.y > 0.01) {',
     '        vec2 mq = vec2(X * 1.25 + uMistOff.x * (1.0 + fi * 0.4) + fi * 17.0, y * 24.0 + fi * 5.1 + uMistOff.y);',
     '        float n = snoise(mq) * 0.62 + snoise(mq * vec2(2.4, 1.6) + vec2(uMistOff.z, 0.0)) * 0.3;',
     '        float a = band * smoothstep(0.05, 0.5, n + (band - 0.5) * 0.3) * uAmt.y * 0.8;',
@@ -600,21 +615,20 @@
     '    }',
     '',
     '    // mist lying on the water along the far shore',
-    '    float mn = snoise(vec2(X * 1.1 + uT * 0.004, 0.5)) * 0.5 + 0.5;',
-    '    col = mix(col, uHaze, exp(-dep / 0.016) * uMist * 0.3 * (0.5 + 0.5 * mn));',
+    '    if (dep < 0.08) {',
+    '      float mn = snoise(vec2(X * 1.1 + uT * 0.004, 0.5)) * 0.5 + 0.5;',
+    '      col = mix(col, uHaze, exp(-dep / 0.016) * uMist * 0.3 * (0.5 + 0.5 * mn));',
+    '    }',
     '    // a faint bright line where the water meets the shore',
     '    col = mix(col, uHaze, 0.16 * (1.0 - smoothstep(0.0, 2.5 * uPx, dep)));',
     '  }',
     '',
-    '  // gentle grade for a dim room: a soft shoulder on the brightest skies, a touch richer colour',
-    '  float lum = dot(col, vec3(0.299, 0.587, 0.114));',
-    '  col = mix(vec3(lum), col, 1.08) * (1.0 - 0.17 * smoothstep(0.3, 0.95, lum));',
-    '',
     '  // vignette, paper grain, dither',
     '  vec2 vq = (uv - 0.5) * vec2(uAspect / 1.6, 1.0);',
     '  col *= mix(1.0, 0.84, smoothstep(0.35, 0.95, length(vq)));',
-    '  col *= 1.0 + (hash12(gl_FragCoord.xy * 0.71 + 41.0) - 0.5) * 0.02;',
-    '  col += (hash12(gl_FragCoord.xy) + hash12(gl_FragCoord.xy + 71.3) - 1.0) / 255.0;',
+    '  float h1 = hash12(gl_FragCoord.xy), h2 = hash12(gl_FragCoord.xy + 71.3);',
+    '  col *= 1.0 + (h1 - 0.5) * 0.02;',
+    '  col += (h1 + h2 - 1.0) / 255.0;',
     '  gl_FragColor = vec4(col, 1.0);',
     '}'
   ].join('\n');
@@ -626,7 +640,7 @@
     tagline: 'A still mountain lake from golden hour to dawn',
     order: 40,
     context: 'webgl',
-    renderScale: { saver: 0.5, balanced: 0.7, high: 0.9 },
+    renderScale: { saver: 0.5, balanced: 0.65, high: 0.9 },
     musicReactive: false,
 
     create: function (env) {
@@ -648,7 +662,7 @@
       var pComp = G.createProgram(gl, G.FULLSCREEN_VS, HEADER + lib + COMP_FS);
 
       var rt = { ridge: null, scene: null };
-      var water = WATER, builtFor = null, lastSceneT = null;
+      var water = WATER, builtFor = null, lastSceneT = null, strip = 0;
       var pal = makePalette();
 
       function freeTargets() {
@@ -664,6 +678,7 @@
         rt.scene = G.createRenderTarget(gl, w, Math.max(1, h - waterPx));
         builtFor = env.quality;
         lastSceneT = null;
+        strip = 0;
       }
 
       makeTargets();
@@ -684,8 +699,7 @@
           samplePalette(p, pal);
 
           var aspect = env.cssWidth / Math.max(1, env.cssHeight);
-          var w = Math.max(2, env.width), h = Math.max(4, env.height);
-          var px = 1 / h;
+          var px = 1 / Math.max(4, env.height);
 
           var sun = orbit(SUN, p), moon = orbit(MOON, p);
           var sunX = (sun[0] - 0.5) * aspect, moonX = (moon[0] - 0.5) * aspect;
@@ -698,10 +712,16 @@
           gl.disable(gl.BLEND);
           gl.disable(gl.DEPTH_TEST);
 
-          var needScene = lastSceneT === null || Math.abs(T - lastSceneT) >= 1 / q.hz || T < lastSceneT;
-          if (needScene) {
+          // Scene refresh: one strip per frame; everything at once when the picture would
+          // move more than about half a pixel across a round of strips (or on first use).
+          var step = lastSceneT === null ? Infinity : T - lastSceneT;
+          var whole = step < 0 || step * q.strips * CLOUD_DRIFT * env.height > 0.5;
+          if (step !== 0) {
+            if (whole) strip = 0;
             lastSceneT = T;
-            // 1. ridges
+          }
+          if (step !== 0 && strip === 0) {
+            // 1. bake ridges and clouds
             rt.ridge.bind();
             pRidge.use()
               .set('uAspect', aspect)
@@ -713,9 +733,16 @@
               .set('uCloud', [cloudSeed[0] + T * CLOUD_DRIFT, cloudSeed[1] + T * CLOUD_DRIFT * 0.78, cloudSeed[2] + T * CLOUD_DRIFT * 0.55, T * 0.0016])
               .set('uCover', pal.cloud + 0.06 * Math.sin(T * 0.0019 + cloudSeed[3]));
             tri.draw();
-
-            // 2. scene above the waterline
+          }
+          if (step !== 0) {
+            // 2. scene above the waterline (one strip, or all of it)
             rt.scene.bind();
+            if (!whole) {
+              var sh = rt.scene.height, y0 = Math.floor(sh * strip / q.strips), y1 = Math.floor(sh * (strip + 1) / q.strips);
+              gl.enable(gl.SCISSOR_TEST);
+              gl.scissor(0, y0, rt.scene.width, Math.max(0, y1 - y0));
+              strip = (strip + 1) % q.strips;
+            }
             bindTex(0, rt.ridge);
             pScene.use()
               .set('uRidge', 0)
@@ -737,6 +764,7 @@
               .set('uSalt', starSalt)
               .set('uTexel', 1 / rt.ridge.width);
             tri.draw();
+            gl.disable(gl.SCISSOR_TEST);
           }
 
           // 3. compose
