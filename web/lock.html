@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en" data-page="lock">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analog Brick</title>
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/lock.css">
+</head>
+<body>
+<!--
+  Lock screen: one instance per display. Loaded as lock.html?role=primary|secondary&display=N.
+  All state arrives over the bridge (docs/BRIDGE.md); js/lock.js wires it up.
+  In a normal browser js/mock/mock-lock.js plays the native side (see its header for query params).
+-->
+
+<div id="stage" class="stage" aria-hidden="true"></div>
+<div class="scrim scrim-top" aria-hidden="true"></div>
+<div class="scrim scrim-bottom" aria-hidden="true"></div>
+
+<!-- ───────────── Primary HUD ───────────── -->
+<main id="hud" class="hud">
+
+  <section class="timer" id="timer" aria-label="Session timer">
+    <p class="timer-intention" id="intention" hidden></p>
+    <div class="timer-clock" id="clock" role="timer" aria-live="off">--:--</div>
+    <p class="timer-meta"><span id="remainingLabel">remaining</span><span class="sep" aria-hidden="true">·</span><span id="endsLabel">ends</span></p>
+    <div class="timer-progress" aria-hidden="true"><span id="sessionFill"></span></div>
+  </section>
+
+  <section class="player glass ctl" id="player" data-view="loading" aria-label="Spotify">
+
+    <!-- Track loaded -->
+    <div class="pv pv-track">
+      <div class="pl-top">
+        <div class="pl-art"><img id="art" alt=""></div>
+        <div class="pl-meta">
+          <div class="pl-title" id="trackTitle"></div>
+          <div class="pl-artist" id="trackArtist"></div>
+        </div>
+        <button class="icon-btn tip" id="playlistsBtn" type="button" data-tip="Playlists" aria-label="Playlists" aria-haspopup="true" aria-expanded="false"><span data-icon="list"></span></button>
+      </div>
+
+      <div class="pl-progress">
+        <div class="pl-bar" id="seekBar" aria-label="Track position">
+          <div class="pl-bar-track"><div class="pl-bar-fill" id="trackFill"></div></div>
+          <div class="pl-bar-knob" id="trackKnob"></div>
+        </div>
+        <div class="pl-times"><span id="tPos">0:00</span><span id="tDur">0:00</span></div>
+      </div>
+
+      <div class="pl-controls">
+        <button class="icon-btn icon-btn-sm" id="shuffleBtn" type="button" aria-label="Shuffle" aria-pressed="false"><span data-icon="shuffle"></span></button>
+        <div class="pl-transport">
+          <button class="icon-btn" id="prevBtn" type="button" aria-label="Previous track"><span data-icon="prev"></span></button>
+          <button class="icon-btn play-btn" id="playBtn" type="button" aria-label="Play"><span data-icon="play"></span></button>
+          <button class="icon-btn" id="nextBtn" type="button" aria-label="Next track"><span data-icon="next"></span></button>
+        </div>
+        <div class="pl-volume">
+          <button class="icon-btn icon-btn-sm" id="muteBtn" type="button" aria-label="Mute"><span data-icon="volume"></span></button>
+          <input class="vol" id="volume" type="range" min="0" max="100" step="1" value="60" aria-label="Volume">
+        </div>
+      </div>
+    </div>
+
+    <!-- Spotify running, nothing loaded -->
+    <div class="pv pv-empty">
+      <div class="pl-msg">
+        <span class="pl-msg-icon" data-icon="note"></span>
+        <div>
+          <div class="pl-msg-title">Nothing playing</div>
+          <div class="pl-msg-body">Pick something to start.</div>
+        </div>
+      </div>
+      <ul class="pl-list" id="emptyList"></ul>
+    </div>
+
+    <!-- Not installed / not running / no permission -->
+    <div class="pv pv-message">
+      <div class="pl-msg">
+        <span class="pl-msg-icon" id="msgIcon" data-icon="note"></span>
+        <div>
+          <div class="pl-msg-title" id="msgTitle"></div>
+          <div class="pl-msg-body" id="msgBody"></div>
+        </div>
+      </div>
+      <button class="btn pl-msg-action" id="msgAction" type="button" hidden></button>
+    </div>
+
+    <footer class="pl-foot">
+      <button class="text-btn" id="peekBtn" type="button"><span data-icon="external"></span><span>Open Spotify</span></button>
+      <span class="pl-hint" id="peekHint">Shows the Spotify app for 90 s</span>
+    </footer>
+  </section>
+
+  <nav class="modes ctl" id="modes" aria-label="Visual"></nav>
+
+  <button class="unlock-link ctl" id="unlockBtn" type="button" title="Unlock early (U)">
+    <span data-icon="lock"></span><span id="unlockLabel">Unlock early</span>
+  </button>
+</main>
+
+<!-- Playlists popover (sibling of the player so its own backdrop blur sees the visual) -->
+<div class="popover glass-strong" id="playlistsPop" role="menu" aria-label="Quick playlists">
+  <div class="popover-head eyebrow">Quick playlists</div>
+  <ul class="pl-list" id="popList"></ul>
+</div>
+
+<!-- Secondary displays: optional quiet timer -->
+<div class="mini-timer" id="miniTimer" aria-hidden="true"></div>
+
+<!-- Mode change toast -->
+<div class="toast" id="toast" aria-live="polite"></div>
+
+<!-- Spotify peek banner (every display) -->
+<div class="peek glass" id="peek" role="status">
+  <span class="peek-icon" data-icon="note"></span>
+  <span class="peek-text"><span class="peek-strong">Spotify is open</span><span class="sep" aria-hidden="true">·</span><span id="peekText">back to focus in 1:30</span></span>
+  <button class="btn peek-btn" id="peekReturn" type="button">Return now</button>
+</div>
+
+<!-- Unlock flow (primary only) -->
+<div class="modal" id="modal" data-stage="idle" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="modal-backdrop"></div>
+  <div class="modal-card glass-strong" id="modalCard" tabindex="-1">
+
+    <div class="steps" id="steps" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div class="steps-label eyebrow" id="stepsLabel">Step 1 of 3</div>
+
+    <!-- PIN -->
+    <section class="mv mv-pin">
+      <h2 class="mv-title" id="modalTitle">Enter your PIN</h2>
+      <div class="slots" id="slots" aria-label="PIN digits"></div>
+      <div class="pin-msg" id="pinMsg" aria-live="assertive">
+        <div class="pin-err" id="pinErr"></div>
+        <div class="pin-hint" id="pinHint"></div>
+      </div>
+      <div class="keypad" id="keypad">
+        <button class="key" type="button" data-key="1">1</button>
+        <button class="key" type="button" data-key="2">2</button>
+        <button class="key" type="button" data-key="3">3</button>
+        <button class="key" type="button" data-key="4">4</button>
+        <button class="key" type="button" data-key="5">5</button>
+        <button class="key" type="button" data-key="6">6</button>
+        <button class="key" type="button" data-key="7">7</button>
+        <button class="key" type="button" data-key="8">8</button>
+        <button class="key" type="button" data-key="9">9</button>
+        <span class="key-spacer" aria-hidden="true"></span>
+        <button class="key" type="button" data-key="0">0</button>
+        <button class="key key-del" type="button" data-key="del" aria-label="Delete"><span data-icon="backspace"></span></button>
+      </div>
+      <button class="btn btn-ghost mv-cancel" type="button" data-action="cancel">Keep focusing</button>
+    </section>
+
+    <!-- Are you sure? -->
+    <section class="mv mv-confirm">
+      <h2 class="mv-title" id="confirmTitle">Are you sure?</h2>
+      <p class="mv-body" id="confirmBody"></p>
+      <div class="confirm-actions">
+        <button class="btn btn-primary btn-keep" id="keepBtn" type="button" data-action="cancel">Keep focusing</button>
+        <button class="btn btn-sure" id="sureBtn" type="button" disabled><span class="sure-fill" id="sureFill"></span><span class="sure-label">Yes, I’m sure</span></button>
+      </div>
+    </section>
+
+    <!-- Cooldown -->
+    <section class="mv mv-cooldown">
+      <div class="breathe" aria-hidden="true"><i></i></div>
+      <h2 class="mv-title">Take a breath.</h2>
+      <p class="mv-body"><span>Too many wrong PINs.</span> Try again in <span class="tabular" id="cooldownLeft">1:00</span></p>
+      <div class="confirm-actions">
+        <button class="btn btn-primary btn-keep" id="backBtn" type="button">Back to focus</button>
+      </div>
+    </section>
+
+    <!-- Unlocked -->
+    <section class="mv mv-unlocked">
+      <div class="unlocked-mark" data-icon="unlock" aria-hidden="true"></div>
+      <h2 class="mv-title">Unlocked</h2>
+      <p class="mv-body">Wrapping up your session…</p>
+    </section>
+  </div>
+</div>
+
+<!-- Outro -->
+<div class="fade-black" id="fadeBlack" aria-hidden="true"></div>
+<div class="ending" id="ending" role="status">
+  <div class="ending-inner">
+    <div class="ending-mark" aria-hidden="true"></div>
+    <h1 class="ending-title" id="endingTitle">Session complete</h1>
+    <p class="ending-sub" id="endingSub"></p>
+  </div>
+</div>
+
+<script src="js/shared/util.js"></script>
+<script src="js/bridge.js"></script>
+<script src="js/mock/mock-lock.js"></script>
+<script src="js/visuals/core.js"></script>
+<script src="js/visuals/aurora.js"></script>
+<script src="js/visuals/drift.js"></script>
+<script src="js/visuals/breath.js"></script>
+<script src="js/visuals/horizon.js"></script>
+<script src="js/visuals/night.js"></script>
+<script src="js/visuals/pulse.js"></script>
+<script src="js/visuals/gallery.js"></script>
+<script src="js/lock.js"></script>
+</body>
+</html>

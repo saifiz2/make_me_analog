@@ -14,9 +14,12 @@
  *                   (view angle u = x/z, distance z). A slow shared domain warp folds
  *                   the ribbons like silk; fine noise along each ribbon makes the rays.
  *                   R,G = front ribbon (intensity, ray height); B,A = back ribbon.
+ *   1b. z-box     — box-filter the footprint along z, one march step wide, so the
+ *                   jittered march integrates the thin ribbons without sparkle.
  *   2. march      — per pixel at reduced resolution, walk the view ray through the
  *                   curtain band: one texture fetch per step, an altitude profile and a
- *                   colour ramp (green-teal base → violet → magenta tips).
+ *                   colour ramp (green-teal base → violet → magenta tips). Stored
+ *                   gamma-encoded so faint gradients survive the 8-bit buffer.
  *   3. glow       — downsample + separable blur of the aurora (sky halo, lighting).
  *   4. composite  — sky gradient, twinkling stars, aurora, glow, mountain ranges, lake
  *                   reflection with slow ripples, spruce silhouettes, tonemap, dither.
@@ -76,6 +79,12 @@
     '  n += 0.0055 * hgt * hgt * max(0.0, 1.0 - abs(f) * 2.4);',
     '  return max(n, 0.004);',
     '}',
+    'float ridgeHaze(float X) {',
+    '  float n = 0.035 + 0.06 * smoothstep(-0.8, 1.0, snoise(vec2(X * 0.42 + uSeed.z, 2.9)));',
+    '  n += 0.022 * (1.0 - abs(snoise(vec2(X * 1.5 + uSeed.z, 6.1))));',
+    '  n += 0.005 * snoise(vec2(X * 5.0 + uSeed.z, 8.7));',
+    '  return n;',
+    '}',
     'float shore(float X) {',
     '  float ux = X / uAspect + 0.5;',
     '  float edge = max(smoothstep(0.30, 0.0, ux), 0.8 * smoothstep(0.72, 1.0, ux));',
@@ -84,7 +93,7 @@
     'void main() {',
     '  float X = (v_uv.x - 0.5) * uAspect;',
     '  if (v_uv.y < 0.5) gl_FragColor = vec4(pack16(ridgeFar(X)), pack16(ridgeNear(X)));',
-    '  else gl_FragColor = vec4(pack16(shore(X)), 0.0, 1.0);',
+    '  else gl_FragColor = vec4(pack16(shore(X)), pack16(ridgeHaze(X)));',
     '}'
   ].join('\n');
 
@@ -127,7 +136,7 @@
     '  vec2 w = vec2(snoise(vec3(wp, t * 0.028 + uSeed.y)),',
     '                snoise(vec3(wp + vec2(5.2, 1.3), t * 0.024 + uSeed.y + 4.0)));',
     '  q += w * vec2(1.9, 0.7);',
-    '  vec2 a = ribbon(q, z, 5.2 + uSeed.z, 2.3, 1.0, uSeed.w, t);',
+    '  vec2 a = ribbon(q, z, 4.9 + uSeed.z, 1.9, 1.0, uSeed.w, t);',
     '  vec2 b = ribbon(q + vec2(31.0, 0.0), z, 10.5 - uSeed.z, 2.6, 0.75, uSeed.w + 11.0, t * 0.9);',
     '  // distance window: nothing overhead, fade into the haze far away',
     '  float win = smoothstep(uZ.x, uZ.x + 1.2, z) * smoothstep(uZ.y, uZ.y - 6.0, z);',
@@ -168,8 +177,8 @@
     '// green-teal base → violet → magenta tips (piecewise, cheap)',
     'vec3 auroraCol(float dh) {',
     '  vec3 c = mix(vec3(0.10, 1.00, 0.50), vec3(0.03, 0.80, 0.68), clamp(dh * 2.6 - 0.1, 0.0, 1.0));',
-    '  c = mix(c, vec3(0.28, 0.24, 0.95), clamp(dh * 1.8 - 0.65, 0.0, 1.0));',
-    '  return mix(c, vec3(0.66, 0.22, 0.86), clamp(dh * 1.5 - 1.3, 0.0, 1.0));',
+    '  c = mix(c, vec3(0.30, 0.30, 1.00), clamp(dh * 1.8 - 0.65, 0.0, 1.0));',
+    '  return mix(c, vec3(0.62, 0.28, 0.92), clamp(dh * 1.5 - 1.3, 0.0, 1.0));',
     '}',
     '',
     'float hash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }',
@@ -190,7 +199,7 @@
     '      float dz = (zb - za) / n;',
     '      float j = hash(gl_FragCoord.xy);',
     '      float on = max(0.05, s * dz * 0.8);   // profile onset no sharper than one step',
-    '      float onB = max(0.11, on);             // the far ribbon gets a softer lower edge',
+    '      float onB = max(0.34, on);             // the far ribbon gets a softer lower edge',
     '      float tu = (u - uU.x) / (uU.y - uU.x);',
     '      float zs = 1.0 / (uZ.y - uZ.x);',
     '      for (int i = 0; i < 64; i++) {',
@@ -258,7 +267,8 @@
     GLSL_PACK,
     'vec3 dec(vec3 c) { return pow(c, vec3(2.2)); }',
     '',
-    'vec3 starLayer(vec2 px, float cell, float density, float rCss, float bMax, float salt) {',
+    '// px: star-space position; pr: canvas px per star-space px; fl: brightness floor for sub-pixel stars',
+    'vec3 starLayer(vec2 px, float pr, float fl, float cell, float density, float rCss, float bMax, float salt) {',
     '  vec2 id = floor(px / cell);',
     '  float h = hash12(id + salt);',
     '  if (h > density) return vec3(0.0);',
@@ -266,10 +276,10 @@
     '  vec2 pos = (0.2 + 0.6 * hash22(id + salt + 3.1)) * cell;',
     '  float h2 = hash12(id * 1.7 + salt + 9.2);',
     '  float b = bMax * (0.1 + 0.9 * pow(h2, 7.0));',
-    '  float r0 = rCss * uPr;',
+    '  float r0 = rCss * pr;',
     '  float r = max(r0, 0.8);',
-    '  b *= min(1.0, (r0 * r0) / (r * r) + 0.35);',
-    '  float d = length(f - pos) * uPr;',
+    '  b *= min(1.0, (r0 * r0) / (r * r) + fl);',
+    '  float d = length(f - pos) * pr;',
     '  float tw = 0.8 + 0.2 * sin(uT * (0.3 + 0.55 * h2) + h * 40.0);',
     '  vec3 tint = mix(vec3(0.72, 0.82, 1.0), vec3(1.0, 0.86, 0.70), hash12(id + salt + 5.5));',
     '  return tint * b * tw * exp(-d * d / (r * r));',
@@ -278,16 +288,20 @@
     'vec3 sky(vec2 uv, float starAmt) {',
     '  float e = uv.y - uHz;',
     '  float k = clamp(e / (1.0 - uHz), 0.0, 1.0);',
-    '  vec3 zen = vec3(0.0009, 0.0013, 0.0034);',
-    '  vec3 hor = vec3(0.0034, 0.0058, 0.0125);',
-    '  vec3 col = mix(hor, zen, sqrt(k));',
+    '  vec3 zen = vec3(0.0006, 0.0009, 0.0026);',
+    '  vec3 hor = vec3(0.0042, 0.0070, 0.0150);',
+    '  vec3 col = mix(hor, zen, pow(k, 0.4));',
     '  vec3 aur = dec(texture2D(uAur, uv).rgb);',
     '  vec3 glow = dec(texture2D(uGlow, uv).rgb);',
-    '  col += aur + glow * 0.28;',
+    '  // more air near the horizon scatters more of the aurora light',
+    '  col += aur + glow * (0.26 + 0.3 * (1.0 - smoothstep(0.0, 0.2, e)));',
     '  if (starAmt > 0.0) {',
-    '    vec2 px = uv * uCss;',
-    '    vec3 st = starLayer(px, 8.0, 0.24, 0.45, 0.08, uSeed.z)',
-    '            + starLayer(px, 33.0, 0.32, 0.65, 0.45, uSeed.z + 17.0);',
+    '    // small previews show a miniature of the full sky, not a few giant stars',
+    '    float vs = max(1.0, 700.0 / uCss.y);',
+    '    vec2 px = uv * uCss * vs;',
+    '    float fl = 0.35 / (vs * vs);',
+    '    vec3 st = starLayer(px, uPr / vs, fl, 8.0, 0.24, 0.45, 0.08, uSeed.z)',
+    '            + starLayer(px, uPr / vs, fl, 33.0, 0.32, 0.65, 0.45, uSeed.z + 17.0);',
     '    float alum = dot(aur + glow, vec3(0.25, 0.65, 0.10));',
     '    col += st * starAmt * smoothstep(0.0, 0.22, e) * (1.0 - 0.75 * smoothstep(0.0, 0.12, alum));',
     '  }',
@@ -298,10 +312,15 @@
     'vec3 above(vec2 uv, float starAmt) {',
     '  vec3 col = sky(uv, starAmt);',
     '  float e = uv.y - uHz;',
-    '  if (e < 0.14) {',
+    '  if (e < 0.16) {',
     '    vec4 land = texture2D(uLand, vec2(uv.x, 0.25));',
     '    float px = 1.0 / uRes.y;',
     '    vec3 lit = dec(texture2D(uGlow, vec2(uv.x, uHz + 0.10)).rgb);',
+    '    // distant range, mostly lost in the haze',
+    '    float rh = unpack16(texture2D(uLand, vec2(uv.x, 0.75)).zw);',
+    '    float ch = clamp((rh - e) / px + 0.5, 0.0, 1.0);',
+    '    vec3 mh = vec3(0.0021, 0.0034, 0.0072) + lit * 0.06;',
+    '    col = mix(col, mh, ch);',
     '    float rf = unpack16(land.xy);',
     '    float cf = clamp((rf - e) / px + 0.5, 0.0, 1.0);',
     '    vec3 mf = vec3(0.0011, 0.0016, 0.0030) + lit * 0.04 * smoothstep(rf - 0.05, rf, e);',
@@ -336,9 +355,9 @@
     '    float cx = (id + 0.5 + (hash11(id * 2.11 + 4.0 + uSeed.y) - 0.5) * 0.7) * cw;',
     '    float ux = cx / uAspect + 0.5;',
     '    float ed = max(smoothstep(0.30, 0.02, ux), 0.85 * smoothstep(0.72, 0.98, ux));',
-    '    if (hash11(id * 1.37 + uSeed.y) > 0.92 * ed) continue;',
+    '    if (hash11(id * 1.37 + uSeed.y) > 1.1 * ed - 0.05) continue;',
     '    float hr = hash11(id * 3.7 + 1.0 + uSeed.y);',
-    '    float th = (0.035 + 0.15 * hr * hr) * (0.45 + 1.0 * ed);',
+    '    float th = (0.045 + 0.14 * pow(hr, 1.5)) * (0.4 + 1.0 * ed);',
     '    cov = max(cov, spruce(p, cx, base - 0.006, th, px, hash11(id * 5.3 + uSeed.y)));',
     '  }',
     '  return cov;',
@@ -373,9 +392,9 @@
 
   // Per-quality budgets (all relative to the mode canvas, which renderScale sizes).
   var Q = {
-    saver:    { steps: 32, dz: 0.30, aur: 0.5, footRows: 192 },
-    balanced: { steps: 48, dz: 0.22, aur: 0.6, footRows: 256 },
-    high:     { steps: 64, dz: 0.16, aur: 0.7, footRows: 320 }
+    saver:    { steps: 32, dz: 0.30, aur: 0.5, aurMax: 960,  footRows: 192 },
+    balanced: { steps: 48, dz: 0.22, aur: 0.6, aurMax: 1280, footRows: 256 },
+    high:     { steps: 64, dz: 0.16, aur: 0.7, aurMax: 1600, footRows: 320 }
   };
 
   BV.register({
@@ -432,7 +451,9 @@
         computeCamera();
         var q = Q[env.quality] || Q.balanced;
         var w = Math.max(1, env.width), h = Math.max(1, env.height);
-        var aw = Math.max(8, Math.round(w * q.aur)), ah = Math.max(8, Math.round(h * q.aur));
+        // the aurora is soft: its buffer never needs to be huge, even on a 5K panel
+        var as = Math.min(q.aur, q.aurMax / Math.max(w, h));
+        var aw = Math.max(8, Math.round(w * as)), ah = Math.max(8, Math.round(h * as));
         var fw = Math.max(16, Math.min(1024, Math.round(aw * 1.2)));
         var fh = Math.max(16, Math.min(q.footRows, Math.round(ah * 0.8) + 32));
         var gw = Math.max(4, Math.round(aw / 4)), gh = Math.max(4, Math.round(ah / 4));
@@ -452,9 +473,6 @@
         gl.activeTexture(gl.TEXTURE0 + unit);
         gl.bindTexture(gl.TEXTURE_2D, target.texture);
       }
-
-      // DEBUG-TEMP
-      window.__auroraDbg = { rt: rt, gl: gl };
 
       return {
         resize: function () { makeTargets(); },

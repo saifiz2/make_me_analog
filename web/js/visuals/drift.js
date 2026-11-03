@@ -14,9 +14,10 @@
  *   4. compose  ink background + soft tonemap of the threads + glow + vignette + dither
  *
  * Trail fade precision: the accumulation buffer is RGBA16F when the GPU can render to it
- * (all Macs running Safari 16+), so exponential decay reaches true black. Without it we
- * fall back to RGBA8 and fade in larger periodic steps followed by a 1/255 offset
- * subtract (reverse-subtract blend), which also reaches exact zero — no grey ghosting.
+ * (all Macs running Safari 16+; RGBA32F is tried next), so a blend-only multiply decays
+ * smoothly to true black. Without a float target we fall back to RGBA8 and fade with a
+ * ping-pong pass that rounds stochastically (floor(v·k + noise)): its expected value decays
+ * exactly exponentially, so it neither stalls in grey ghosts nor cuts faint trails short.
  *
  * The simulation is driven by differences in t (not dt) so a frozen stage renders a
  * still, and large steps (warp, freeze catch-up) are split into substeps whose deposits
@@ -38,7 +39,6 @@
   var FIELD_RATE = 0.011;           // how fast the flow field evolves (noise z per second)
   var GRID_PER_H = 30;              // flow grid cells per screen height
   var MARGIN = 0.07;                // simulated margin outside the view (screen heights)
-  var LDR_FADE_INTERVAL = 0.14;     // seconds between fades on the 8-bit fallback
 
   // Warm ink palette (display-space RGB). Ramp position 0 → 1.
   var RAMP = [
@@ -88,17 +88,39 @@
     'precision mediump float;',
     'varying float v_side;',
     'varying vec3 v_col;',
-    'uniform float u_scale;',
     'void main() {',
+    '  // Soft profile across the thread; butt ends along it, so every pixel on the path',
+    '  // is inked exactly once per pass whatever the particle speed.',
     '  float d = max(1.0 - v_side * v_side, 0.0);',
-    '  gl_FragColor = vec4(v_col * (d * d * u_scale), 1.0);',
+    '  gl_FragColor = vec4(v_col * (d * d), 1.0);',
     '}'
+  ].join('\n');
+
+  var COPY_FS = [
+    'uniform sampler2D u_src;',
+    'varying vec2 v_uv;',
+    'void main() { gl_FragColor = texture2D(u_src, v_uv); }'
   ].join('\n');
 
   var SOLID_FS = [
     'precision mediump float;',
     'uniform vec4 u_color;',
     'void main() { gl_FragColor = u_color; }'
+  ].join('\n');
+
+  // 8-bit fallback fade: stochastic rounding. floor(v·k + u), u uniform in [0,1) and fresh each
+  // frame, has expectation exactly v·k, so slow exponential decay neither stalls (grey ghosts)
+  // nor needs an offset that would cut faint trails short.
+  var LDR_FADE_FS = [
+    'uniform sampler2D u_src;',
+    'uniform float u_k;',
+    'uniform vec2 u_jitter;',
+    'varying vec2 v_uv;',
+    'void main() {',
+    '  vec3 v = floor(texture2D(u_src, v_uv).rgb * 255.0 + 0.5);',
+    '  float u = hash12(gl_FragCoord.xy + u_jitter);',
+    '  gl_FragColor = vec4(floor(v * u_k + u) / 255.0, 1.0);',
+    '}'
   ].join('\n');
 
   function precisionHeader() {
@@ -202,10 +224,13 @@
       };
 
       // ── GL resources ──
+      // Getting the colour-buffer extensions is what enables rendering to float textures.
       var ext = {
         half: gl.getExtension('OES_texture_half_float'),
         halfCb: gl.getExtension('EXT_color_buffer_half_float'),
-        halfLinear: gl.getExtension('OES_texture_half_float_linear')
+        float: gl.getExtension('OES_texture_float'),
+        floatCb: gl.getExtension('WEBGL_color_buffer_float'),
+        floatBlend: gl.getExtension('EXT_float_blend')
       };
 
       var tri = GLU.fullscreenTriangle(gl);
@@ -214,6 +239,8 @@
       var downProg = GLU.createProgram(gl, GLU.FULLSCREEN_VS, precisionHeader() + DOWN_FS);
       var blurProg = GLU.createProgram(gl, GLU.FULLSCREEN_VS, 'precision mediump float;\n' + BLUR_FS);
       var composeProg = GLU.createProgram(gl, GLU.FULLSCREEN_VS, composeFS(U));
+      var copyProg = GLU.createProgram(gl, GLU.FULLSCREEN_VS, precisionHeader() + COPY_FS);
+      var ldrFadeProg = null;   // built lazily, only if no float target is renderable
 
       var FLOATS_PER_VERT = 6;
       var vertData = new Float32Array(MAX_PARTICLES * 4 * FLOATS_PER_VERT);
@@ -232,10 +259,11 @@
       idx = null;
 
       var acc = null;           // { texture, framebuffer, width, height, hdr }
+      var accAlt = null;        // 8-bit fallback only: ping-pong partner for the fade pass
       var glowA = null, glowB = null;
       var blackTex = null;      // bound as glow when glow is off
 
-      function makeTarget(w, h, wantHalf, linear) {
+      function makeTarget(w, h, wantFloat, linear) {
         var tex = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, tex);
         var filt = linear ? gl.LINEAR : gl.NEAREST;
@@ -245,14 +273,19 @@
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         var hdr = false;
         var fb = gl.createFramebuffer();
-        if (wantHalf && ext.half) {
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, ext.half.HALF_FLOAT_OES, null);
+        // Prefer RGBA16F, then RGBA32F (only where float blending is allowed), else RGBA8.
+        var types = [];
+        if (wantFloat && ext.half) types.push(ext.half.HALF_FLOAT_OES);
+        if (wantFloat && ext.float && ext.floatBlend) types.push(gl.FLOAT);
+        for (var ti = 0; ti < types.length && !hdr; ti++) {
+          gl.bindTexture(gl.TEXTURE_2D, tex);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, types[ti], null);
           gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
           gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
           hdr = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
-          if (!hdr) gl.bindTexture(gl.TEXTURE_2D, tex);
         }
         if (!hdr) {
+          gl.bindTexture(gl.TEXTURE_2D, tex);
           gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
           gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
           gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
@@ -275,7 +308,7 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
       // ── simulation state ──
-      var W = 1, H = 1, aspect = 1, ratio = 1;
+      var W = 1, H = 1, aspect = 1;
       var count = 0, quality = null;
       var px = new Float32Array(MAX_PARTICLES), py = new Float32Array(MAX_PARTICLES);
       var age = new Float32Array(MAX_PARTICLES), life = new Float32Array(MAX_PARTICLES);
@@ -289,8 +322,8 @@
 
       var simTime = 0;          // simulation clock (s)
       var fieldTime = -1e9;     // when the grid was last evaluated
-      var lastT = null;         // last t passed to render()
-      var ldrFadeAcc = 0;       // 8-bit path: time since the last fade step
+      var lastT = 0;            // last t passed to render(); the prewarm leaves the sim at t = 0
+      var ldrFrame = 0;         // 8-bit path: varies the rounding noise per frame
       var depositScale = 1, composeGain = 1;
       var light = [1, 0];       // sheen direction
       var paletteCenter = 0.5;
@@ -335,10 +368,15 @@
         var minSide = Math.min(env.cssWidth, env.cssHeight);
         var fine = Math.max(0.72, Math.min(1, Math.sqrt(minSide / 700)));
         var widthScale = Math.max(0.9, Math.min(2.2, Math.sqrt(pr))) * fine;
-        // Fewer particles (saver) → slightly stronger ink so coverage reads the same.
+        // Keep the overall amount of light about the same everywhere: fewer particles
+        // (saver) and threads thinner in CSS px than the 1× balanced reference (Retina,
+        // small previews) get slightly stronger ink; saver also has no glow pass.
         var nominal = COUNTS.balanced * areaFactor();
         var comp = Math.pow(nominal / Math.max(1, count), 0.5);
-        intensityBase = 0.36 * comp / Math.sqrt(fine);
+        var cssWidth = widthScale / pr, refWidth = 0.9 / 0.8;
+        var widthComp = Math.max(1, Math.min(1.45, Math.pow(refWidth / cssWidth, 0.6)));
+        var glowComp = env.quality === 'saver' ? 1.15 : 1;
+        intensityBase = 0.4 * comp * widthComp * glowComp;
         for (var i = 0; i < count; i++) {
           var z = depth[i];
           hwPx[i] = (0.95 + 0.75 * z) * widthScale;
@@ -382,7 +420,7 @@
             // Slow pools of light falling across the silk: bright passages and quiet dark ones.
             var l = noise.noise3D(X * 0.9 - 17.0 + flav.colorPhase, Y * 0.9 + 9.0, time * 0.006 + 41.0);
             l = 0.5 + 0.5 * l;
-            glum[k] = 0.3 + 1.45 * l * l * l;
+            glum[k] = 0.36 + 1.5 * l * l * l;
           }
         }
         var sum = 0;
@@ -457,8 +495,8 @@
         gl.drawElements(gl.TRIANGLES, nq * 6, gl.UNSIGNED_SHORT, 0);
       }
 
-      // Multiply the accumulation buffer by k (and, on 8-bit, subtract `sub` afterwards).
-      function fadeAcc(k, sub) {
+      // Float target: multiply in place with a blend-only pass (dst *= k).
+      function fadeAcc(k) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, acc.framebuffer);
         gl.viewport(0, 0, acc.width, acc.height);
         gl.enable(gl.BLEND);
@@ -467,27 +505,30 @@
         gl.blendFunc(gl.ZERO, gl.SRC_COLOR);
         solidProg.set('u_color', [k, k, k, k]);
         tri.draw();
-        if (sub > 0) {
-          gl.blendEquation(gl.FUNC_REVERSE_SUBTRACT);
-          gl.blendFunc(gl.ONE, gl.ONE);
-          solidProg.set('u_color', [sub, sub, sub, 0]);
-          tri.draw();
-          gl.blendEquation(gl.FUNC_ADD);
+      }
+
+      // 8-bit target: stochastic-rounding fade into the partner buffer, then swap.
+      function fadeAccLdr(k) {
+        if (!ldrFadeProg) {
+          ldrFadeProg = GLU.createProgram(gl, GLU.FULLSCREEN_VS, precisionHeader() + U.glsl.common + '\n' + LDR_FADE_FS);
         }
+        gl.disable(gl.BLEND);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, accAlt.framebuffer);
+        gl.viewport(0, 0, accAlt.width, accAlt.height);
+        ldrFadeProg.use();
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, acc.texture);
+        ldrFadeProg.set('u_src', 0);
+        ldrFadeProg.set('u_k', k);
+        ldrFrame = (ldrFrame + 1) % 4096;
+        ldrFadeProg.set('u_jitter', [(ldrFrame * 37.13) % 1024, (ldrFrame * 91.71) % 1024]);
+        tri.draw();
+        var t = acc; acc = accAlt; accAlt = t;
       }
 
       function fadeFor(step) {
-        if (acc.hdr) {
-          fadeAcc(Math.exp(-step / TRAIL_TAU), 0);
-          return;
-        }
-        // 8-bit: a tiny per-frame multiply would round back to the same value forever, so
-        // fade in larger steps and finish with an exact one-step offset that reaches zero.
-        ldrFadeAcc += step;
-        if (ldrFadeAcc < LDR_FADE_INTERVAL) return;
-        var steps = Math.min(8, Math.floor(ldrFadeAcc / LDR_FADE_INTERVAL));
-        fadeAcc(Math.exp(-ldrFadeAcc / TRAIL_TAU), steps / 255);
-        ldrFadeAcc = 0;
+        var k = Math.exp(-step / TRAIL_TAU);
+        if (acc.hdr) fadeAcc(k); else fadeAccLdr(k);
       }
 
       // Advance every particle by h seconds, writing quads; deposit weight w (pre-applied decay).
@@ -544,7 +585,7 @@
           var li = ((ct * 255) | 0) * 3;
           var cr = RAMP_LUT[li], cg = RAMP_LUT[li + 1], cb = RAMP_LUT[li + 2];
           // Warm where the light falls; in shadow, a growing share of threads turn teal.
-          var dark = 1 - (sL - 0.3) * 2.0;
+          var dark = 1 - (sL - 0.36) * 2.0;
           dark = dark < 0 ? 0 : dark > 1 ? 1 : dark;
           var sh = (dark * 0.5 - coolRank[i]) * 8 + 0.5;
           if (sh > 0) {
@@ -594,7 +635,6 @@
         gl.blendFunc(gl.ONE, gl.ONE);
         threadProg.use();
         threadProg.set('u_res', [W, H]);
-        threadProg.set('u_scale', 1);
         bindThreadAttribs();
         for (var s = 0; s < n; s++) {
           if (simTime - fieldTime > refresh || simTime < fieldTime) computeField(simTime + h * 0.5);
@@ -610,7 +650,6 @@
         gl.viewport(0, 0, acc.width, acc.height);
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT);
-        ldrFadeAcc = 0;
       }
 
       function glowEnabled() { return env.quality !== 'saver' && glowA && glowB; }
@@ -665,21 +704,34 @@
       }
 
       function allocTargets() {
-        freeTarget(acc); freeTarget(glowA); freeTarget(glowB);
+        freeTarget(glowA); freeTarget(glowB);
         acc = makeTarget(W, H, !options.driftLowPrecision, false);
+        accAlt = acc.hdr ? null : makeTarget(W, H, false, false);
         // 8-bit storage clips at 1.0: store at reduced scale and compensate when composing.
-        depositScale = acc.hdr ? 1 : 0.45;
-        composeGain = acc.hdr ? 1 : 1 / 0.45;
+        depositScale = acc.hdr ? 1 : 0.7;
+        composeGain = acc.hdr ? 1 : 1 / 0.7;
         var gw = Math.max(1, Math.round(W / 4)), gh2 = Math.max(1, Math.round(H / 4));
         glowA = makeTarget(gw, gh2, false, true);
         glowB = makeTarget(gw, gh2, false, true);
       }
 
+      // Stretch the previous trails into the new buffer (cheap; used for modest resizes).
+      function copyTrails(from) {
+        gl.disable(gl.BLEND);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, acc.framebuffer);
+        gl.viewport(0, 0, acc.width, acc.height);
+        copyProg.use();
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, from.texture);
+        copyProg.set('u_src', 0);
+        tri.draw();
+      }
+
       function layout(prewarmSeconds) {
+        var old = acc, oldAlt = accAlt;
         W = Math.max(1, env.width | 0);
         H = Math.max(1, env.height | 0);
         aspect = W / H;
-        ratio = env.pixelRatio || 1;
         allocTargets();
         setupGrid();
         // Respawn anything that no longer fits the new aspect.
@@ -687,8 +739,18 @@
           if (px[i] > aspect + MARGIN || px[i] < -MARGIN) spawn(i, true);
         }
         setupParticles();
-        clearAcc();
-        advance(prewarmSeconds, { noFade: true });
+        // A modest resize (e.g. a window being dragged) keeps the existing silk; a big jump
+        // (a thumbnail going full screen) would look soft when stretched, so re-prewarm.
+        var sx = old ? old.width / W : 0, sy = old ? old.height / H : 0;
+        if (old && old.hdr === acc.hdr && sx > 0.6 && sx < 1.67 && sy > 0.6 && sy < 1.67) {
+          copyTrails(old);
+        } else {
+          clearAcc();
+          advance(prewarmSeconds, { noFade: true });
+        }
+        freeTarget(old); freeTarget(oldAlt);
+        gl.disable(gl.BLEND);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       }
 
       layout(PREWARM);
@@ -700,7 +762,6 @@
         render: function (t) {
           if (gl.isContextLost()) return;
           if (env.quality !== quality) { setupParticles(); }
-          if (lastT === null) lastT = t;
           var step = t - lastT;
           lastT = t;
           if (step > 0) {
@@ -710,14 +771,16 @@
           compose();
         },
         destroy: function () {
-          freeTarget(acc); freeTarget(glowA); freeTarget(glowB);
-          acc = glowA = glowB = null;
+          freeTarget(acc); freeTarget(accAlt); freeTarget(glowA); freeTarget(glowB);
+          acc = accAlt = glowA = glowB = null;
           if (blackTex) gl.deleteTexture(blackTex);
           blackTex = null;
           gl.deleteBuffer(vbo);
           gl.deleteBuffer(ibo);
           tri.destroy();
-          threadProg.destroy(); solidProg.destroy(); downProg.destroy(); blurProg.destroy(); composeProg.destroy();
+          threadProg.destroy(); solidProg.destroy(); downProg.destroy(); blurProg.destroy();
+          composeProg.destroy(); copyProg.destroy();
+          if (ldrFadeProg) ldrFadeProg.destroy();
           psi = gvx = gvy = gcol = glum = null;
           vertData = null;
         }
