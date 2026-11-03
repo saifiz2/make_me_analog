@@ -10,8 +10,8 @@
  * Rendering (WebGL1, GLSL ES 1.00), three cheap passes:
  *   1. bake     — per screen column: the height and slope of each of the five ridges, the
  *                 big-shape height of the two mountain ranges (for their two-tone faces) and
- *                 the outline of three cloud layers, in a W×10 texture (16-bit packed
- *                 heights). Ridges and clouds drift sideways with slow parallax, so this is
+ *                 the outline of three cloud layers, in an 11×W texture (one row per screen
+ *                 column — tall, so it renders in parallel; 16-bit packed heights). Ridges and clouds drift sideways with slow parallax, so this is
  *                 re-baked whenever the scene is.
  *   2. scene    — everything above the waterline: sky gradient, sun / moon and their glow,
  *                 stars, clouds, ridges (two-tone lit faces, rim light, valley haze) and
@@ -38,7 +38,7 @@
   // ───────────────────────────── tuning ─────────────────────────────
   var CYCLE = 1800;          // seconds for a full day cycle
   var WATER = 0.31;          // waterline, fraction of the screen height from the bottom
-  var RIDGE_ROWS = 10;       // rows in the bake texture: 5 ridges, 3 cloud layers, 2 coarse ridges
+  var RIDGE_ROWS = 11;       // records per column in the bake: 5 ridges, 3 cloud layers, 2 shading, 1 misc
   // Horizontal drift of each ridge in screen heights per second (far → near: parallax).
   var DRIFT = [0.00010, 0.00019, 0.00032, 0.00050, 0.00075];
   var CLOUD_DRIFT = 0.0021;  // screen heights per second
@@ -188,22 +188,27 @@
     'float unpack16(vec2 e) { return (e.x * 255.0 + e.y) / 255.0; }'
   ].join('\n');
 
-  // Pass 1: per-column bake. Rows 0–4: ridge r (0 = farthest). RG = packed height (screen-uv
+  // Pass 1: per-column bake into an 11×W texture: texel (r, x) holds record r for screen
+  // column x (stored transposed, so the pass has many short scanlines to spread over).
+  // Records 0–4: ridge r (0 = farthest). RG = packed height (screen-uv
   // y), B = fine slope dy/dX (±8, X in screen heights), A = skew of the shading spines.
-  // Rows 5–7: cloud layers (low, mid, high). RG = packed top edge, B = thickness (×0.08),
+  // Records 5–7: cloud layers (low, mid, high). RG = packed top edge, B = thickness (×0.08),
   // A = end fade (0 = clear sky).
-  // Rows 8–9: slopes of the big shapes of ridges 0 and 1 (no small crags), measured over
+  // Records 8–9: slopes of the big shapes of ridges 0 and 1 (no small crags), measured over
   // four window widths (RGBA = ±0.008, 0.025, 0.06, 0.12; ±1.5 → 0…1). They shade the faces.
+  // Record 10, first column only: how much of the sun (R) and moon (G) clears the ridges.
   var RIDGE_FS = [
     'varying vec2 v_uv;',
     'uniform float uAspect;',
-    'uniform float uTexW;',
+    'uniform float uTexW;      // screen columns (texture height)',
     'uniform float uPx;        // screen heights per canvas pixel',
     'uniform vec4 uDriftA;     // ridges 0..3 horizontal offsets (screen heights)',
     'uniform float uDriftB;    // ridge 4',
     'uniform vec4 uSalt;',
     'uniform vec4 uCloud;      // xyz: cloud layer offsets, w: slow morph',
     'uniform float uCover;     // cloud cover bias',
+    'uniform vec4 uLights;     // sun X, y, moon X, y',
+    'uniform vec2 uLightR;     // sun, moon radius',
     GLSL_PACK,
     '',
     '// Conifer tips: one slim triangle per cell (jittered), patchy forest with clearings.',
@@ -268,14 +273,20 @@
     '  h += 0.014 * head * snoise(vec2(x * 2.6, 5.5 + uSalt.w));   // headlands roll, never plateau',
     '  return h + trees(x, 0.0085, 0.017 + 0.008 * head, uSalt.z + 47.0);',
     '}',
+    '// Big shapes only (matches the c output of ridge0 / ridge1), for the face shading.',
     'float coarse(float row, float x) {',
-    '  float c;',
-    '  if (row < 8.5) ridge0(x, c); else ridge1(x, c);',
-    '  return c;',
+    '  bool r0 = row < 8.5;',
+    '  float f = r0 ? 0.62 : 1.05;',
+    '  float salt = r0 ? 4.1 + uSalt.x : 5.2 + uSalt.y;',
+    '  float b = r0 ? snoise(vec2(x * 0.27, 1.7 + uSalt.x)) : snoise(vec2(x * 0.45, 2.3 + uSalt.y));',
+    '  float n1 = 1.0 - abs(snoise(vec2(x * f, salt)));',
+    '  n1 *= n1;',
+    '  float n2 = 1.0 - abs(snoise(vec2(x * f * 2.1, salt + 3.3)));',
+    '  n2 = n2 * n2 * n1;',
+    '  float amp = r0 ? 0.17 + 0.06 * b : 0.085 + 0.025 * b;',
+    '  return (r0 ? 0.03 : 0.025) * b + amp * (0.62 * n1 + 0.2 * n2);',
     '}',
-    'float coarseSlope(float row, float x, float d) {',
-    '  return clamp((coarse(row, x + d) - coarse(row, x - d)) / (2.0 * d), -1.5, 1.5);',
-    '}',
+
     'float ridgeAt(float row, float x) {',
     '  float c;',
     '  if (row < 0.5) return ridge0(x + uDriftA.x, c);',
@@ -318,12 +329,35 @@
     '}',
     '',
     'void main() {',
-    '  float row = floor(v_uv.y * ' + RIDGE_ROWS.toFixed(1) + ');',
-    '  float X = (v_uv.x - 0.5) * uAspect;',
+    '  float row = floor(v_uv.x * ' + RIDGE_ROWS.toFixed(1) + ');',
+    '  float X = (v_uv.y - 0.5) * uAspect;',
+    '  // (Loops below keep one copy of each ridge function in the compiled shader.)',
+    '  if (row > 9.5) {',
+    '    if (v_uv.y * uTexW > 1.0) { gl_FragColor = vec4(0.0); return; }',
+    '    vec2 top = vec2(0.0);',
+    '    for (int i = 0; i < 10; i++) {',
+    '      float fi = float(i);',
+    '      bool sun = fi < 4.5;',
+    '      float hk = ridgeAt(sun ? fi : fi - 5.0, sun ? uLights.x : uLights.z);',
+    '      if (sun) top.x = max(top.x, hk); else top.y = max(top.y, hk);',
+    '    }',
+    '    float hw = 0.5 * uAspect;',
+    '    gl_FragColor = vec4(smoothstep(-uLightR.x, uLightR.x, uLights.y - top.x) * step(abs(uLights.x), hw),',
+    '                        smoothstep(-uLightR.y, uLightR.y, uLights.w - top.y) * step(abs(uLights.z), hw), 0.0, 1.0);',
+    '    return;',
+    '  }',
     '  if (row > 7.5) {',
     '    float xr = X + (row < 8.5 ? uDriftA.x : uDriftA.y);',
-    '    gl_FragColor = vec4(coarseSlope(row, xr, 0.008), coarseSlope(row, xr, 0.025),',
-    '                        coarseSlope(row, xr, 0.06), coarseSlope(row, xr, 0.12)) / 3.0 + 0.5;',
+    '    vec4 s4 = vec4(0.0);',
+    '    for (int k = 0; k < 8; k++) {',
+    '      float fk = float(k);',
+    '      float j = floor(fk * 0.5);',
+    '      float d = j < 0.5 ? 0.008 : j < 1.5 ? 0.025 : j < 2.5 ? 0.06 : 0.12;',
+    '      float sg = fk - 2.0 * j < 0.5 ? 1.0 : -1.0;',
+    '      float c = coarse(row, xr + sg * d) * sg / (2.0 * d);',
+    '      s4 += c * vec4(step(j, 0.5), step(abs(j - 1.0), 0.5), step(abs(j - 2.0), 0.5), step(2.5, j));',
+    '    }',
+    '    gl_FragColor = clamp(s4, -1.5, 1.5) / 3.0 + 0.5;',
     '    return;',
     '  }',
     '  if (row > 4.5) {',
@@ -335,8 +369,13 @@
     '    return;',
     '  }',
     '  float e = 0.5 * uAspect / uTexW;',
-    '  float h = ridgeAt(row, X);',
-    '  float sf = (ridgeAt(row, X + e) - ridgeAt(row, X - e)) / (2.0 * e);',
+    '  vec3 hs = vec3(0.0);',
+    '  for (int k = 0; k < 3; k++) {',
+    '    float fk = float(k);',
+    '    hs += ridgeAt(row, X + (fk - 1.0) * e) * vec3(step(fk, 0.5), step(abs(fk - 1.0), 0.5), step(1.5, fk));',
+    '  }',
+    '  float h = hs.y;',
+    '  float sf = (hs.z - hs.x) / (2.0 * e);',
     '  // skew of the shading spines below this column (moves with the ridge)',
     '  float sk = 0.55 + 0.45 * snoise(vec2((X + (row < 0.5 ? uDriftA.x : uDriftA.y)) * 0.7, 11.0 + row * 7.0));',
     '  gl_FragColor = vec4(pack16(h), clamp(0.5 + sf / 16.0, 0.0, 1.0), clamp(sk, 0.0, 1.0));',
@@ -369,12 +408,13 @@
     'uniform vec2 uLight;      // light source position (X, y)',
     'uniform vec4 uMistOff;',
     'uniform float uSalt;',
-    'uniform float uTexel;     // 1 / bake texture width',
+    'uniform float uTexel;     // 1 / bake texture height (one texel per screen column)',
     GLSL_PACK,
     '',
     'vec3 mixL(vec3 a, vec3 b, float t) { return sqrt(mix(a * a, b * b, t)); }   // mix in ~linear light',
     'vec3 screen(vec3 a, vec3 b) { return 1.0 - (1.0 - a) * (1.0 - clamp(b, 0.0, 1.0)); }',
     'float rowV(float r) { return (r + 0.5) / ' + RIDGE_ROWS.toFixed(1) + '; }',
+    'vec4 bake(float r, float u) { return texture2D(uRidge, vec2(rowV(r), u)); }',
     '',
     'vec3 starLayer(vec2 px, float pr, float fl, float cell, float density, float rCss, float bMax, float salt) {',
     '  vec2 id = floor(px / cell);',
@@ -395,8 +435,7 @@
     '',
     '// One baked cloud layer over col. yc: base line, alpha: layer opacity.',
     'vec3 cloudLayer(vec3 col, float row, float yc, float alpha, float sf, float y, float ds) {',
-    '  float rv = rowV(row);',
-    '  vec4 e = texture2D(uRidge, vec2(v_uv.x, rv));',
+    '  vec4 e = bake(row, v_uv.x);',
     '  if (e.a <= 0.0) return col;',
     '  float top = unpack16(e.rg);',
     '  float th = max(e.b * 0.08, 1e-4);',
@@ -404,8 +443,8 @@
     '  float soft = max(1.2 * uPx, th * sf);',
     '  if (y < bot - soft || y > top + soft * 8.0) return col;',
     '  // feather perpendicular to the edge: widen by the local slope of the top',
-    '  float tl = unpack16(texture2D(uRidge, vec2(v_uv.x - uTexel, rv)).rg);',
-    '  float tr = unpack16(texture2D(uRidge, vec2(v_uv.x + uTexel, rv)).rg);',
+    '  float tl = unpack16(bake(row, v_uv.x - uTexel).rg);',
+    '  float tr = unpack16(bake(row, v_uv.x + uTexel).rg);',
     '  float sl = (tr - tl) / (2.0 * uTexel * uAspect);',
     '  float st = soft * sqrt(1.0 + min(sl * sl, 400.0));',
     '  float a = smoothstep(bot - soft * 0.5, bot + soft * 0.5, y) * smoothstep(top + st * 0.5, top - st * 0.5, y);',
@@ -429,7 +468,7 @@
     '  vec4 R[5];',
     '  float start = -1.0;',
     '  for (int i = 0; i < 5; i++) {',
-    '    R[i] = texture2D(uRidge, vec2(v_uv.x, rowV(float(i))));',
+    '    R[i] = bake(float(i), v_uv.x);',
     '    if (unpack16(R[i].rg) - y > 6.0 * uPx) start = float(i);',
     '  }',
     '',
@@ -497,7 +536,7 @@
     '        float dp = max(dd, 0.0);',
     '        float ux = v_uv.x + dp * r.a * 1.2 / uAspect;',
     '        float dl = 0.008 + dp * 0.3;',
-    '        vec4 S4 = (texture2D(uRidge, vec2(ux, rowV(8.0 + fi))) - 0.5) * 3.0;',
+    '        vec4 S4 = (bake(8.0 + fi, ux) - 0.5) * 3.0;',
     '        float s = dl < 0.025 ? mix(S4.x, S4.y, (dl - 0.008) / 0.017)',
     '                : dl < 0.06 ? mix(S4.y, S4.z, (dl - 0.025) / 0.035)',
     '                : mix(S4.z, S4.w, min((dl - 0.06) / 0.06, 1.0));',
@@ -550,19 +589,14 @@
     'uniform vec4 uSun;        // X, y, radius, glow amount',
     'uniform vec4 uMoon;       // X, y, radius, amount',
     'uniform float uMist;',
+    'uniform float uTexel;     // 1 / bake texture height',
     GLSL_PACK,
     '',
     'vec3 scene(vec2 uv, float above) {',
     '  return texture2D(uScene, vec2(uv.x, clamp(above / (1.0 - uWater), 0.0, 1.0))).rgb;',
     '}',
     '',
-    '// how much of a light at (X, y) shows over the ridges',
-    'float overRidges(vec2 L, float r) {',
-    '  float u = L.x / uAspect + 0.5;',
-    '  float top = 0.0;',
-    '  for (int i = 0; i < 5; i++) top = max(top, unpack16(texture2D(uRidge, vec2(u, (float(i) + 0.5) / ' + RIDGE_ROWS.toFixed(1) + ')).rg));',
-    '  return smoothstep(-r, r, L.y - top) * step(0.0, u) * step(u, 1.0);',
-    '}',
+
     '',
     'float glitter(float xl, float zl, float dep, float X, float cx, float lodf) {',
     '  float w = 0.012 + dep * 0.22;',
@@ -602,16 +636,17 @@
     '    col *= mix(1.0, 0.82, smoothstep(0.1, 0.32, dep));     // near water: looking down into it',
     '    col = mix(col, col * 1.05 + uHaze * 0.035, wind * 0.6);',
     '',
-    '    // glitter paths under the sun and the moon',
+    '    // glitter paths under the sun and the moon (when they clear the ridges)',
+    '    vec2 vis = texture2D(uRidge, vec2(10.5 / ' + RIDGE_ROWS.toFixed(1) + ', uTexel * 0.5)).rg;',
     '    float lodG = clamp(1.6 - dz * 12.0, 0.0, 1.0);',
     '    float fall = exp(-dep * 5.0);',
-    '    if (uSun.w > 0.01) {',
+    '    if (uSun.w > 0.01 && vis.x > 0.0) {',
     '      float g = glitter(xl, zl, dep, X, uSun.x, lodG);',
-    '      if (g > 0.0) col += uSunCol * g * fall * uSun.w * 0.5 * overRidges(uSun.xy, uSun.z);',
+    '      if (g > 0.0) col += uSunCol * g * fall * uSun.w * 0.5 * vis.x;',
     '    }',
-    '    if (uMoon.w > 0.01) {',
+    '    if (uMoon.w > 0.01 && vis.y > 0.0) {',
     '      float g = glitter(xl, zl, dep, X, uMoon.x, lodG);',
-    '      if (g > 0.0) col += vec3(0.75, 0.8, 0.9) * g * fall * uMoon.w * 0.3 * overRidges(uMoon.xy, uMoon.z);',
+    '      if (g > 0.0) col += vec3(0.75, 0.8, 0.9) * g * fall * uMoon.w * 0.3 * vis.y;',
     '    }',
     '',
     '    // mist lying on the water along the far shore',
@@ -626,9 +661,8 @@
     '  // vignette, paper grain, dither',
     '  vec2 vq = (uv - 0.5) * vec2(uAspect / 1.6, 1.0);',
     '  col *= mix(1.0, 0.84, smoothstep(0.35, 0.95, length(vq)));',
-    '  float h1 = hash12(gl_FragCoord.xy), h2 = hash12(gl_FragCoord.xy + 71.3);',
-    '  col *= 1.0 + (h1 - 0.5) * 0.02;',
-    '  col += (h1 + h2 - 1.0) / 255.0;',
+    '  float h1 = hash12(gl_FragCoord.xy) - 0.5;',
+    '  col = col * (1.0 + h1 * 0.02) + h1 * (1.5 / 255.0);',
     '  gl_FragColor = vec4(col, 1.0);',
     '}'
   ].join('\n');
@@ -646,7 +680,10 @@
     create: function (env) {
       var gl = env.gl;
       var U = env.util, G = U.gl;
-      var lib = U.glsl.common + '\n' + U.glsl.noise + '\n';
+      // Only the 2D simplex noise is used: leave out the 3D noise and fbm (smaller shaders
+      // compile faster, which matters for the first frame after a mode switch).
+      var noise = U.glsl.noise, cut = noise.indexOf('// 3D simplex noise');
+      var lib = U.glsl.common + '\n' + (cut > 0 ? noise.slice(0, cut) : noise) + '\n';
 
       var rand = U.mulberry32(((env.seed | 0) + 3) * 9973 + 17);
       var salt = [rand() * 60, rand() * 60, rand() * 60, rand() * 60];
@@ -674,7 +711,7 @@
         var w = Math.max(2, env.width), h = Math.max(4, env.height);
         var waterPx = Math.max(1, Math.round(h * WATER));
         water = waterPx / h;
-        rt.ridge = G.createRenderTarget(gl, w, RIDGE_ROWS, { nearest: true });
+        rt.ridge = G.createRenderTarget(gl, RIDGE_ROWS, w, { nearest: true });   // transposed: 10 × W
         rt.scene = G.createRenderTarget(gl, w, Math.max(1, h - waterPx));
         builtFor = env.quality;
         lastSceneT = null;
@@ -725,13 +762,15 @@
             rt.ridge.bind();
             pRidge.use()
               .set('uAspect', aspect)
-              .set('uTexW', rt.ridge.width)
+              .set('uTexW', rt.ridge.height)
               .set('uPx', px)
               .set('uDriftA', [drift0[0] + T * DRIFT[0], drift0[1] + T * DRIFT[1], drift0[2] + T * DRIFT[2], drift0[3] + T * DRIFT[3]])
               .set('uDriftB', drift0[4] + T * DRIFT[4])
               .set('uSalt', salt)
               .set('uCloud', [cloudSeed[0] + T * CLOUD_DRIFT, cloudSeed[1] + T * CLOUD_DRIFT * 0.78, cloudSeed[2] + T * CLOUD_DRIFT * 0.55, T * 0.0016])
-              .set('uCover', pal.cloud + 0.06 * Math.sin(T * 0.0019 + cloudSeed[3]));
+              .set('uCover', pal.cloud + 0.06 * Math.sin(T * 0.0019 + cloudSeed[3]))
+              .set('uLights', [sunX, sun[1], moonX, moon[1]])
+              .set('uLightR', [SUN.r, MOON.r]);
             tri.draw();
           }
           if (step !== 0) {
@@ -762,7 +801,7 @@
               .set('uLight', [lightX, lightY])
               .set('uMistOff', [mistSeed + T * MIST_DRIFT, T * 0.0009, T * 0.006, 0])
               .set('uSalt', starSalt)
-              .set('uTexel', 1 / rt.ridge.width);
+              .set('uTexel', 1 / rt.ridge.height);
             tri.draw();
             gl.disable(gl.SCISSOR_TEST);
           }
@@ -784,7 +823,8 @@
             .set('uSunCol', pal.sun)
             .set('uSun', [sunX, sun[1], SUN.r, pal.glowAmt])
             .set('uMoon', [moonX, moon[1], MOON.r, moonAmt])
-            .set('uMist', pal.mist);
+            .set('uMist', pal.mist)
+            .set('uTexel', 1 / rt.ridge.height);
           tri.draw();
           gl.activeTexture(gl.TEXTURE0);
         },
