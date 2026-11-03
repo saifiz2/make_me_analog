@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en" data-page="preview">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analog Brick · visual preview</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; color: #fff; font: 12px -apple-system, system-ui, sans-serif; }
+  #stage { position: fixed; inset: 0; }
+  #hud { position: fixed; left: 12px; bottom: 10px; opacity: .55; pointer-events: none; white-space: pre; }
+  #hud:empty { display: none; }
+</style>
+</head>
+<body>
+<!--
+  Dev preview for visual modes. Query params:
+    mode=aurora            which mode (default: first registered)
+    quality=balanced       saver | balanced | high
+    audio=synthetic        pretend Spotify is playing (synthetic audio)
+    palette=223344,c9a46a  album-art palette (hex, no #)
+    freeze=12.5            render a still at t seconds
+    warp=4                 time multiplier
+    seed=3                 seed / displayIndex flavour
+    breath=box             Breath pattern option
+    images=1               feed Gallery mode generated sample images
+    hud=1                  show mode / fps
+  Keys: ←/→ change mode, Q cycle quality, A toggle synthetic audio.
+-->
+<div id="stage"></div>
+<div id="hud"></div>
+<script src="js/visuals/core.js"></script>
+<script src="js/visuals/aurora.js"></script>
+<script src="js/visuals/drift.js"></script>
+<script src="js/visuals/breath.js"></script>
+<script src="js/visuals/horizon.js"></script>
+<script src="js/visuals/night.js"></script>
+<script src="js/visuals/pulse.js"></script>
+<script src="js/visuals/gallery.js"></script>
+<script>
+(function () {
+  var p = new URLSearchParams(location.search);
+  var modes = BrickVisuals.list().map(function (m) { return m.id; });
+  var mode = p.get('mode') || modes[0] || '__fallback';
+
+  function sampleImages(n) {
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      var c = document.createElement('canvas'); c.width = 1600; c.height = 1000;
+      var g = c.getContext('2d');
+      var hue = (i * 47 + 190) % 360;
+      var grad = g.createLinearGradient(0, 0, 0, c.height);
+      grad.addColorStop(0, 'hsl(' + hue + ',40%,62%)');
+      grad.addColorStop(0.55, 'hsl(' + ((hue + 30) % 360) + ',45%,40%)');
+      grad.addColorStop(1, 'hsl(' + ((hue + 60) % 360) + ',35%,16%)');
+      g.fillStyle = grad; g.fillRect(0, 0, c.width, c.height);
+      for (var k = 0; k < 4; k++) {
+        g.fillStyle = 'hsla(' + ((hue + 200) % 360) + ',25%,' + (12 + k * 6) + '%,0.9)';
+        g.beginPath(); g.moveTo(0, c.height);
+        for (var x = 0; x <= c.width; x += 40) g.lineTo(x, c.height * (0.55 + k * 0.1) - 120 * Math.sin(x * 0.004 + i + k * 1.7) - 60 * Math.sin(x * 0.011 + k));
+        g.lineTo(c.width, c.height); g.fill();
+      }
+      out.push(c.toDataURL('image/jpeg', 0.85));
+    }
+    return out;
+  }
+
+  var options = { breathPattern: p.get('breath') || 'box', images: p.get('images') ? sampleImages(+p.get('images') > 1 ? +p.get('images') : 4) : [] };
+  var stage = BrickVisuals.mount(document.getElementById('stage'), {
+    mode: mode,
+    quality: p.get('quality') || 'balanced',
+    seed: +(p.get('seed') || 1),
+    displayIndex: +(p.get('display') || 0),
+    freeze: p.has('freeze') ? +p.get('freeze') : null,
+    timeScale: +(p.get('warp') || 1),
+    options: options
+  });
+  window.__stage = stage;
+  if (p.get('audio') === 'synthetic') stage.setPlaying(true);
+  if (p.get('palette')) stage.setPalette(p.get('palette').split(','));
+
+  var hud = document.getElementById('hud');
+  if (p.get('hud')) setInterval(function () { hud.textContent = stage.mode + ' · ' + stage.quality + ' · ' + stage.fps + ' fps' + (stage.audio.playing ? ' · ♪' : ''); }, 500);
+
+  var qualities = ['saver', 'balanced', 'high'];
+  addEventListener('keydown', function (e) {
+    var i = modes.indexOf(stage.mode);
+    if (e.key === 'ArrowRight') stage.setMode(modes[(i + 1) % modes.length]);
+    if (e.key === 'ArrowLeft') stage.setMode(modes[(i - 1 + modes.length) % modes.length]);
+    if (e.key === 'q') stage.setQuality(qualities[(qualities.indexOf(stage.quality) + 1) % 3]);
+    if (e.key === 'a') stage.setPlaying(!stage.audio.playing);
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Registered via SMAppService.agent. At login it relaunches Analog Brick with the resume-only flag:
+	     if a session is still running the lock comes back, otherwise the app exits immediately. -->
+	<key>Label</key>
+	<string>com.analogbrick.AnalogBrick.resume</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/AnalogBrick</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>Contents/MacOS/AnalogBrick</string>
+		<string>--resume-only</string>
+	</array>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>com.analogbrick.AnalogBrick</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>
