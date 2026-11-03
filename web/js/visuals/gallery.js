@@ -54,12 +54,13 @@
   var EMPTY_TEXT = 'Choose a photo folder in setup to see your own pictures here.';
   var FAIL_TEXT = 'These photos couldn’t be opened. Choose another folder in setup.';
 
-  // Empty-state glow: warm lamp light, dusty rose, deep teal, a little indigo.
+  // Empty-state dusk: night blue above, warm plum below, a desk-lamp amber pool, rose, teal, violet.
+  var SKY = ['#0a0d1b', '#121327', '#1f1520'];
   var BLOBS = [
-    { c: [242, 186, 116], a: 0.22, r: 0.62, x: 0.30, y: 0.34, ax: 0.10, ay: 0.08, fx: 1 / 97,  fy: 1 / 131 },
-    { c: [196, 108, 112], a: 0.15, r: 0.58, x: 0.74, y: 0.68, ax: 0.09, ay: 0.08, fx: 1 / 113, fy: 1 / 89 },
-    { c: [56, 116, 126],  a: 0.17, r: 0.66, x: 0.16, y: 0.86, ax: 0.07, ay: 0.06, fx: 1 / 127, fy: 1 / 103 },
-    { c: [84, 90, 158],   a: 0.11, r: 0.55, x: 0.86, y: 0.18, ax: 0.07, ay: 0.07, fx: 1 / 89,  fy: 1 / 141 }
+    { c: [255, 172, 96],  a: 0.30, r: 0.58, x: 0.24, y: 0.86, ax: 0.08, ay: 0.05, fx: 1 / 97,  fy: 1 / 131 },
+    { c: [214, 104, 120], a: 0.20, r: 0.55, x: 0.78, y: 0.74, ax: 0.08, ay: 0.06, fx: 1 / 113, fy: 1 / 89 },
+    { c: [64, 138, 160],  a: 0.17, r: 0.60, x: 0.84, y: 0.16, ax: 0.07, ay: 0.06, fx: 1 / 127, fy: 1 / 103 },
+    { c: [112, 100, 206], a: 0.15, r: 0.55, x: 0.18, y: 0.14, ax: 0.07, ay: 0.06, fx: 1 / 89,  fy: 1 / 141 }
   ];
 
   var ICON_SVG =
@@ -187,7 +188,7 @@
       for (var i = 0; i < N * N; i++) {
         var v = Math.round((r() * 0.75 + r() * 0.25) * 255);
         d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v;
-        d[i * 4 + 3] = 11;
+        d[i * 4 + 3] = 10;
       }
       g.putImageData(id, 0, 0);
       grainURL = c.toDataURL('image/png');
@@ -543,11 +544,10 @@
       function makeBackdrop(s) {
         if (!s.small) return null;
         var w = W(), h = H(), sa = w / h;
+        // The whole photo, stretched to the screen (after this much blur the distortion is invisible,
+        // and the glow beside the print matches the print's own colours at each height).
         var sw = s.small.width, sh = s.small.height;
-        // Cover crop, enlarged 1.25× around the centre.
-        var cw, ch;
-        if (sw / sh > sa) { ch = sh / 1.25; cw = ch * sa; } else { cw = sw / 1.25; ch = cw / sa; }
-        var cx = (sw - cw) / 2, cy = (sh - ch) / 2;
+        var cw = sw / 1.08, ch = sh / 1.08, cx = (sw - cw) / 2, cy = (sh - ch) / 2;
         var long = 20, tw = sa >= 1 ? long : Math.max(2, Math.round(long * sa)), th = sa >= 1 ? Math.max(2, Math.round(long / sa)) : long;
         var c = downscale(s.small, cx, cy, cw, ch, tw, th);
         if (!c) return null;
@@ -558,9 +558,9 @@
         var g = ctx2d(c);
         if (g) {
           g.globalAlpha = 1;
-          try { g.globalCompositeOperation = 'saturation'; g.fillStyle = 'rgba(128,128,128,0.28)'; g.fillRect(0, 0, c.width, c.height); } catch (e) { /* ignore */ }
+          try { g.globalCompositeOperation = 'saturation'; g.fillStyle = 'rgba(128,128,128,0.18)'; g.fillRect(0, 0, c.width, c.height); } catch (e) { /* ignore */ }
           g.globalCompositeOperation = 'source-over';
-          g.fillStyle = 'rgba(6,7,11,0.5)';
+          g.fillStyle = 'rgba(6,7,11,0.42)';
           g.fillRect(0, 0, c.width, c.height);
         }
         c.className = 'gal-backdrop';
@@ -646,7 +646,9 @@
         var g = emptyCtx, cw = emptyCanvas.width, ch = emptyCanvas.height, R = Math.max(cw, ch);
         g.globalCompositeOperation = 'source-over';
         g.globalAlpha = 1;
-        g.fillStyle = '#08090e';
+        var sky = g.createLinearGradient(0, 0, 0, ch);
+        sky.addColorStop(0, SKY[0]); sky.addColorStop(0.55, SKY[1]); sky.addColorStop(1, SKY[2]);
+        g.fillStyle = sky;
         g.fillRect(0, 0, cw, ch);
         g.globalCompositeOperation = 'lighter';
         var tt = t + blobPhase;

@@ -327,7 +327,7 @@
       }
       setTimeout(next, 140);
     }
-    setTimeout(next, 700);
+    setTimeout(next, 1200);
   }
 
   /** Give a frozen thumbnail stage a plausible moment of music (Pulse reads env.audio). */
