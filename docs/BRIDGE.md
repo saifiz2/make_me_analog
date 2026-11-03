@@ -69,7 +69,7 @@ Secondary displays show the visual and, if enabled, a quiet timer.
     "quickPlaylists": [ { "name": "Deep Focus", "uri": "spotify:playlist:37i9dQZF1DWZeKCadgRdKQ" } ],
     "breathPattern": "box"            // box | coherent | relax (used by the Breath mode)
   },
-  "gallery": { "images": ["brick://gallery/0", "brick://gallery/1"] }  // all images (≤300), full size; [] if no folder chosen. brick://gallery/<n>[?size=<px>]
+  "gallery": { "images": ["brick://app/gallery/0", "brick://app/gallery/1"] }  // all images (≤300), full size; [] if no folder chosen. brick://app/gallery/<n>[?size=<px>] (same origin as the pages)
 }
 ```
 
@@ -195,7 +195,7 @@ The normal app window used to configure and start a session.
   },
   "status": {
     "focus":   { "shortcutsAvailable": true, "onName": "Analog Brick Focus On", "offName": "Analog Brick Focus Off", "hasOn": true, "hasOff": false },
-    "spotify": { "installed": true, "running": false, "permission": "undetermined" },
+    "spotify": { "installed": true, "running": false, "permission": "granted", "permissionLastKnown": true },   // closed Spotify: last answer macOS gave
     "audio":   { "supported": true, "permission": "denied" },          // permission: granted | denied | unknown
     "loginItem": { "status": "enabled" },                             // enabled | requiresApproval | notRegistered | notFound | unsupported
     "displays": 2
@@ -204,7 +204,7 @@ The normal app window used to configure and start a session.
     "todayMs": 5400000, "weekMs": 22200000, "streakDays": 3, "totalSessions": 41,
     "recent": [ { "startedAt": 1762100000000, "plannedMs": 3000000, "focusedMs": 3000000, "completed": true } ]
   },
-  "gallery": { "folder": "/Users/me/Pictures/Calm", "count": 24, "images": ["brick://gallery/0?size=480"] }  // folder null when unset; images = first ≤12, 480 px thumbnails
+  "gallery": { "folder": "/Users/me/Pictures/Calm", "count": 24, "images": ["brick://app/gallery/0?size=480"] }  // folder null when unset; images = first ≤12, 480 px thumbnails
 }
 ```
 

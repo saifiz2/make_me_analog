@@ -5,7 +5,7 @@
  * an <img> (or a pre-scaled <canvas>) on its own compositor layer, moved with CSS transforms that
  * render(t) updates. The GPU only re-composites; nothing is re-painted per frame.
  *
- *   • env.options.images is a list of URLs (brick://gallery/N in the app, data: URLs in preview).
+ *   • env.options.images is a list of URLs (brick://app/gallery/N in the app, data: URLs in preview).
  *     It is re-checked every frame, so stage.setOptions({ images }) takes effect at once.
  *   • Each photo is shown ~24 s with a slow zoom (1.0 → ~1.12, sometimes reversed) and a pan
  *     toward a focal point (biased toward the most detailed / colourful part of the photo when

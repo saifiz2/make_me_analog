@@ -46,19 +46,28 @@ final class SpotifyController {
     var isRunning: Bool { runningApp != nil }
 
     /// Automation permission for Spotify, without prompting. Cached for a few seconds.
+    /// Strict: this gates every script, so it never returns a remembered answer.
     func permission() -> Permission {
         if let cached = permissionCache, Date().timeIntervalSince(cached.1) < 5 { return cached.0 }
         let p = Self.determinePermission(ask: false)
         if p != .unknown {
             permissionCache = (p, Date())
-            UserDefaults.standard.set(p.rawValue, forKey: Self.permissionKey)
-            return p
+            remember(p)
         }
-        // macOS can only answer while Spotify is running; otherwise report the last definite answer.
-        return UserDefaults.standard.string(forKey: Self.permissionKey).flatMap(Permission.init(rawValue:)) ?? .unknown
+        return p
     }
 
     private static let permissionKey = "spotifyAutomationPermission"
+
+    private func remember(_ p: Permission) {
+        guard p != .unknown else { return }
+        UserDefaults.standard.set(p.rawValue, forKey: Self.permissionKey)
+    }
+
+    /// The last definite answer macOS gave (it can only answer while Spotify is running). Display only.
+    private var lastKnownPermission: Permission? {
+        UserDefaults.standard.string(forKey: Self.permissionKey).flatMap(Permission.init(rawValue:))
+    }
 
     /// Ask for Automation permission (shows the system prompt). Spotify must be running.
     /// Blocks while the prompt is up, so this runs off the main thread.
@@ -68,7 +77,7 @@ final class SpotifyController {
                 let p = Self.determinePermission(ask: true)
                 DispatchQueue.main.async {
                     self.permissionCache = (p, Date())
-                    if p != .unknown { UserDefaults.standard.set(p.rawValue, forKey: Self.permissionKey) }
+                    self.remember(p)
                     completion(p)
                 }
             }
@@ -92,8 +101,16 @@ final class SpotifyController {
         }
     }
 
+    /// For the setup checklist: while Spotify is closed macOS can't say, so show the last known answer.
     func statusPayload() -> [String: Any] {
-        ["installed": isInstalled, "running": isRunning, "permission": permission().rawValue]
+        let running = isRunning
+        var p = permission()
+        var lastKnown = false
+        if p == .unknown, !running, let saved = lastKnownPermission {
+            p = saved
+            lastKnown = true
+        }
+        return ["installed": isInstalled, "running": running, "permission": p.rawValue, "permissionLastKnown": lastKnown]
     }
 
     // MARK: launching
@@ -404,6 +421,7 @@ final class SpotifyController {
                         return
                     }
                     self.permissionCache = (.denied, Date())
+                    self.remember(.denied)
                 }
                 completion?(r.0, r.1)
             }
@@ -448,7 +466,7 @@ final class SpotifyController {
         let result = script.executeAndReturnError(&error)
         if let error {
             let code = error[NSAppleScript.errorNumber] as? Int ?? -1
-            if code == -1743 { permissionCache = (.denied, Date()) }
+            if code == -1743 { permissionCache = (.denied, Date()); remember(.denied) }
             return (nil, code)
         }
         return (result.stringValue ?? "", nil)

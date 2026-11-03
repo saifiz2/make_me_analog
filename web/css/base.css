@@ -221,3 +221,12 @@ input[type="range"].slider::-webkit-slider-thumb {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
 }
+
+/* Safari before 16.4 (macOS 13.0–13.2) draws outlines as rectangles; give round controls a ring that follows their radius. */
+.btn:focus-visible, .chip:focus-visible, .key:focus-visible, .icon-btn:focus-visible, .text-btn:focus-visible,
+.mode-btn:focus-visible, .unlock-link:focus-visible, .step-btn:focus-visible, .seg:focus-visible,
+.ready-item:focus-visible, button:focus-visible {
+  outline: 2px solid transparent;          /* still visible in forced-colors mode */
+  box-shadow: 0 0 0 2px var(--ink-0), 0 0 0 4px var(--lamp);
+}
+.switch input:focus-visible + span { outline: 2px solid transparent; box-shadow: 0 0 0 2px var(--ink-0), 0 0 0 4px var(--lamp); }

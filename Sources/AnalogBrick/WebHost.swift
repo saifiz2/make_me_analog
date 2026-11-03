@@ -193,7 +193,7 @@ final class BrickWebView: WKWebView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-/// Serves brick://app/<path> from the web root and brick://gallery/<n> from the photo folder.
+/// Serves brick://app/<path> from the web root and brick://app/gallery/<n> (or brick://gallery/<n>) from the photo folder.
 final class BrickSchemeHandler: NSObject, WKURLSchemeHandler {
     static let scheme = "brick"
 
@@ -214,7 +214,9 @@ final class BrickSchemeHandler: NSObject, WKURLSchemeHandler {
         let id = ObjectIdentifier(urlSchemeTask)
         stopped.remove(id)
 
-        switch url.host {
+        // Photos live under brick://app/gallery/<n> so they share the pages' origin (no canvas tainting).
+        let isGallery = url.host == "gallery" || (url.host == "app" && url.path.hasPrefix("/gallery/"))
+        switch isGallery ? "gallery" : url.host {
         case "app":
             let relative = url.path.removingPercentEncoding ?? url.path
             let file = webRoot.appendingPathComponent(relative).standardizedFileURL

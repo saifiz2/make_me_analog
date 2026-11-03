@@ -701,3 +701,6 @@ label.pref-row { cursor: pointer; }
   .pc-name { font-size: 30px; }
   .preview-caption { left: 26px; bottom: 22px; }
 }
+
+/* WebKit draws a Caps Lock glyph inside focused password fields; PINs are digits, so hide it to keep the dots centred. */
+input[type="password"]::-webkit-caps-lock-indicator { content: none; display: none !important; }

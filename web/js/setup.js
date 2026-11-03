@@ -156,20 +156,23 @@
       btn.textContent = ok ? 'Copied' : 'Copy failed';
       setTimeout(function () { btn.textContent = old; }, 1400);
     }
-    function legacy() {
-      var ta = el('textarea', { style: { position: 'fixed', left: '-9999px', top: '0' } });
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      var ok = false;
-      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
-      ta.remove();
-      done(ok);
-    }
+    // Copy synchronously inside the click (user activation), with the helper textarea kept next to the button
+    // so focus never leaves the readiness popover (WebKit focuses a textarea on select(), which would close it).
+    var host = (btn && btn.parentNode) || document.body;
+    var ta = el('textarea', { readonly: true, 'aria-hidden': 'true', tabindex: '-1',
+      style: { position: 'fixed', left: '-9999px', top: '0', opacity: '0' } });
+    ta.value = text;
+    host.appendChild(ta);
+    var ok = false;
+    try { ta.select(); ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    if (btn) { try { btn.focus({ preventScroll: true }); } catch (e) { btn.focus(); } }
+    if (ok) { done(true); return; }
+    // brick:// may not count as a secure context, so the async API is only a fallback.
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function () { done(true); }, legacy);
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
     } else {
-      legacy();
+      done(false);
     }
   }
 

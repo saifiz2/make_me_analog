@@ -51,7 +51,7 @@ final class Gallery {
         let count = images.count
         lock.unlock()
         let n = limit.map { min($0, count) } ?? count
-        return (0..<n).map { "brick://gallery/\($0)" }
+        return (0..<n).map { "brick://app/gallery/\($0)" }   // same origin as the pages, so canvases stay readable
     }
 
     func payload() -> [String: Any] {
