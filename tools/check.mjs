@@ -100,8 +100,14 @@ async function checkModes() {
         await page.evaluate((o) => window.__stage.setMode(o, { transition: 300 }), other);
         await page.waitForTimeout(700);
         await page.evaluate((id) => window.__stage.setMode(id, { transition: 300 }), m.id);
-        await page.waitForTimeout(900);
-        const layers = await page.evaluate(() => window.__stage.layers.length);
+        // Stage time advances at most 0.1 s per frame, so on a slow software renderer the fade
+        // takes longer in wall time. Poll instead of sleeping a fixed amount.
+        let layers = 0;
+        for (let i = 0; i < 60; i++) {
+          await page.waitForTimeout(250);
+          layers = await page.evaluate(() => window.__stage.layers.length);
+          if (layers === 1) break;
+        }
         if (errors.length) fail(`mode ${m.id} crossfade`, errors.join(' | '));
         else if (layers !== 1) fail(`mode ${m.id} crossfade`, `${layers} layers left after transition`);
         else pass(`mode ${m.id} crossfade`);
