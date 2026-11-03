@@ -124,7 +124,7 @@ final class WebHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
             isReady = true
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.35
-                webView.animator().alphaValue = 1
+                self.webView.animator().alphaValue = 1
             }
             delegate?.webHost(self, didReceive: type, payload: payload)
         case "log":
