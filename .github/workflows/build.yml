@@ -1,0 +1,68 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core-linux:
+    name: BrickCore tests (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Test
+        run: swift test
+
+  web:
+    name: Web smoke tests (Chromium)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright
+        run: |
+          npm install --no-save playwright@1.63.0
+          npx playwright install --with-deps chromium
+      - name: Smoke test pages and visual modes
+        run: node tools/check.mjs --out build/web-shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-screenshots
+          path: build/web-shots
+
+  macos:
+    name: App (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Test BrickCore
+        run: swift test
+      - name: Build Analog Brick.app
+        run: scripts/build_app.sh
+      - name: Render pages in the real WebKit (best effort; CI VMs may lack WebGL)
+        continue-on-error: true
+        run: |
+          APP="build/Analog Brick.app/Contents/MacOS/AnalogBrick"
+          for t in setup lock aurora drift breath horizon night pulse gallery; do
+            "$APP" --snapshot "$t" "build/snapshots/$t.png" 1440x900 || echo "snapshot $t failed"
+          done
+      - name: Zip app
+        run: ditto -c -k --keepParent "build/Analog Brick.app" "build/AnalogBrick-macOS.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AnalogBrick-macOS
+          path: build/AnalogBrick-macOS.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-snapshots
+          path: build/snapshots
+          if-no-files-found: ignore

@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en" data-page="setup">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Analog Brick</title>
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/setup.css">
+</head>
+<body>
+<!--
+  Setup window. Native loads brick://app/setup.html; in a browser js/mock/mock-setup.js fakes native.
+  Mock query params: focus=ok|missing|unavailable  spotify=granted|undetermined|denied|notinstalled
+  audio=granted|denied  login=enabled|requiresApproval|notRegistered  stats=empty|some  gallery=1
+  displays=N  mode=<id>  fail=1 (session.start always errors)  prefs=1 (open Preferences)  ready=<item> (open a checklist item)
+-->
+<div class="backdrop" aria-hidden="true"></div>
+
+<div class="app" id="app">
+  <header class="top">
+    <div class="brand">
+      <h1 class="wordmark">analog<span class="wordmark-us">_</span>brick</h1>
+      <p class="ethos">Put the laptop down. Pick up the pen.</p>
+    </div>
+    <div class="top-right">
+      <div class="stats" id="stats"></div>
+      <button type="button" class="icon-btn" id="openPrefs" aria-label="Preferences" aria-haspopup="dialog" aria-controls="prefs" title="Preferences (⌘,)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.07 9.81L21.41 10.09L21.41 13.91L19.07 14.19L18.55 15.45L20 17.3L17.3 20L15.45 18.55L14.19 19.07L13.91 21.41L10.09 21.41L9.81 19.07L8.55 18.55L6.7 20L4 17.3L5.45 15.45L4.93 14.19L2.59 13.91L2.59 10.09L4.93 9.81L5.45 8.55L4 6.7L6.7 4L8.55 5.45L9.81 4.93L10.09 2.59L13.91 2.59L14.19 4.93L15.45 5.45L17.3 4L20 6.7L18.55 8.55Z"/><circle cx="12" cy="12" r="3.1"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="stagecol" aria-label="Visual">
+      <div class="preview" id="preview">
+        <div class="preview-stage" id="previewStage"></div>
+        <div class="preview-shade" aria-hidden="true"></div>
+        <div class="preview-lock" aria-hidden="true">
+          <div class="pl-intent" id="plIntent"></div>
+          <div class="pl-time" id="plTime">50:00</div>
+          <div class="pl-meta">remaining<span class="pl-sep">·</span><span id="plEnds">ends</span></div>
+          <div class="pl-progress"><span></span></div>
+        </div>
+        <div class="preview-caption" id="previewCaption" aria-live="polite">
+          <div class="pc-name" id="pcName"></div>
+          <div class="pc-tag" id="pcTag"></div>
+          <div class="pc-extra" id="pcExtra"></div>
+        </div>
+        <div class="preview-badge" aria-hidden="true"><span class="live-dot"></span>Preview</div>
+      </div>
+      <div class="modes" id="modes" role="radiogroup" aria-label="Visual"></div>
+    </section>
+
+    <section class="session" aria-label="Session">
+      <form id="sessionForm" class="session-form" novalidate autocomplete="off">
+        <div class="group group-duration">
+          <div class="group-head">
+            <label class="label" for="durInput">Duration</label>
+            <span class="ends" id="endsAt" aria-live="polite"></span>
+          </div>
+          <div class="stepper">
+            <button type="button" class="step-btn" id="durMinus" aria-label="5 minutes shorter">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12"/></svg>
+            </button>
+            <div class="stepper-value">
+              <input id="durInput" class="dur-input" type="text" inputmode="numeric" role="spinbutton"
+                     aria-valuemin="5" aria-valuemax="480" aria-valuenow="50" aria-describedby="durUnit endsAt" maxlength="3" spellcheck="false" value="50">
+              <span class="dur-unit" id="durUnit">min</span>
+            </div>
+            <button type="button" class="step-btn" id="durPlus" aria-label="5 minutes longer">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12M12 6v12"/></svg>
+            </button>
+          </div>
+          <div class="segmented" id="presets" role="group" aria-label="Duration presets"></div>
+        </div>
+
+        <div class="group">
+          <div class="group-head">
+            <label class="label" for="intention">Intention</label>
+            <span class="hint-right">Optional</span>
+          </div>
+          <input class="field" id="intention" type="text" maxlength="140" placeholder="What will you work on?" spellcheck="true" autocomplete="off">
+        </div>
+
+        <div class="group">
+          <div class="group-head">
+            <span class="label" id="pinLabel">Unlock PIN</span>
+            <button type="button" class="reveal" id="pinReveal" aria-pressed="false" aria-label="Show PIN">
+              <svg class="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.8"/></svg>
+              <svg class="i-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l16 16M10.2 6.1A9.6 9.6 0 0 1 12 5.5C18 5.5 21.5 12 21.5 12a17 17 0 0 1-2.6 3.4M14.1 14.2A2.8 2.8 0 0 1 9.8 10M6.4 7.6C3.9 9.4 2.5 12 2.5 12S6 18.5 12 18.5c1.5 0 2.8-.4 4-1"/></svg>
+              <span class="reveal-text">Show</span>
+            </button>
+          </div>
+          <div class="pin-row" role="group" aria-labelledby="pinLabel">
+            <div class="pin-cell">
+              <label class="visually-hidden" for="pin1">PIN, 4 to 8 digits</label>
+              <input class="field pin-input" id="pin1" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8"
+                     placeholder="PIN" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-describedby="pinHelp">
+            </div>
+            <div class="pin-cell">
+              <label class="visually-hidden" for="pin2">Confirm PIN</label>
+              <input class="field pin-input" id="pin2" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8"
+                     placeholder="Confirm" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-describedby="pinHelp">
+            </div>
+          </div>
+          <p class="pin-help" id="pinHelp" aria-live="polite"></p>
+        </div>
+
+        <div class="begin" id="begin">
+          <ul class="rules" id="rules"></ul>
+          <p class="summary" id="summary"></p>
+          <button type="submit" class="begin-btn" id="beginBtn" disabled aria-describedby="beginError">
+            <span class="begin-label" id="beginLabel">Set a PIN to begin</span>
+            <kbd class="begin-kbd" aria-hidden="true">⌘↩</kbd>
+          </button>
+          <p class="begin-error" id="beginError" role="alert" aria-live="assertive"></p>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <footer class="ready-bar">
+    <div class="ready-summary" id="readySummary"></div>
+    <div class="ready-items" id="readyItems"></div>
+    <span class="version" id="version"></span>
+  </footer>
+</div>
+
+<div class="popover" id="readyPop" role="dialog" aria-modal="false" aria-labelledby="readyPopTitle" tabindex="-1"></div>
+
+<div class="scrim" id="scrim" aria-hidden="true"></div>
+<aside class="prefs" id="prefs" role="dialog" aria-modal="true" aria-labelledby="prefsTitle" aria-hidden="true" tabindex="-1">
+  <div class="prefs-head">
+    <h2 class="prefs-title" id="prefsTitle">Preferences</h2>
+    <button type="button" class="icon-btn" id="closePrefs" aria-label="Close preferences">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+    </button>
+  </div>
+  <div class="prefs-body" id="prefsBody">
+
+    <section class="pref-section" aria-labelledby="pfVisual">
+      <h3 class="eyebrow" id="pfVisual">Visuals</h3>
+      <div class="pref-block">
+        <div class="pref-t" id="qualityLabel">Quality</div>
+        <div class="cards" role="radiogroup" aria-labelledby="qualityLabel">
+          <label class="card"><input type="radio" name="quality" value="saver"><span class="card-body"><span class="card-t">Saver</span><span class="card-d">Softer, 30 fps. Easy on battery.</span></span></label>
+          <label class="card"><input type="radio" name="quality" value="balanced"><span class="card-body"><span class="card-t">Balanced</span><span class="card-d">Smooth and sharp. Fits most Macs.</span></span></label>
+          <label class="card"><input type="radio" name="quality" value="high"><span class="card-body"><span class="card-t">High</span><span class="card-d">Full resolution. Best on power.</span></span></label>
+        </div>
+      </div>
+      <div class="pref-block">
+        <div class="pref-t" id="breathLabel">Breath pattern</div>
+        <div class="cards" role="radiogroup" aria-labelledby="breathLabel">
+          <label class="card"><input type="radio" name="breathPattern" value="box"><span class="card-body"><span class="card-t">Box</span><span class="card-d">4 · 4 · 4 · 4 counts. Steady, alert.</span></span></label>
+          <label class="card"><input type="radio" name="breathPattern" value="coherent"><span class="card-body"><span class="card-t">Coherent</span><span class="card-d">In 5.5, out 5.5. Even, settling.</span></span></label>
+          <label class="card"><input type="radio" name="breathPattern" value="relax"><span class="card-body"><span class="card-t">Relax</span><span class="card-d">In 4, hold 7, out 8. Slows you down.</span></span></label>
+        </div>
+      </div>
+      <div class="pref-block">
+        <div class="pref-row-head">
+          <div>
+            <div class="pref-t">Gallery folder</div>
+            <div class="pref-d" id="galleryDesc">Choose a folder of photos for the Gallery visual.</div>
+          </div>
+          <div class="pref-actions">
+            <button type="button" class="btn btn-sm" id="galleryChoose">Choose…</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="galleryClear">Clear</button>
+          </div>
+        </div>
+        <div class="gallery-thumbs" id="galleryThumbs"></div>
+      </div>
+    </section>
+
+    <section class="pref-section" aria-labelledby="pfSession">
+      <h3 class="eyebrow" id="pfSession">During a session</h3>
+      <label class="pref-row">
+        <span class="pref-text"><span class="pref-t">Keep displays awake</span><span class="pref-d">Stops the screen from sleeping while the visual plays.</span></span>
+        <span class="switch"><input type="checkbox" data-key="keepAwake"><span></span></span>
+      </label>
+      <label class="pref-row">
+        <span class="pref-text"><span class="pref-t">Timer on all displays</span><span class="pref-d" id="displaysDesc">Show a quiet countdown on your other displays too.</span></span>
+        <span class="switch"><input type="checkbox" data-key="showTimerOnSecondary"><span></span></span>
+      </label>
+      <label class="pref-row">
+        <span class="pref-text"><span class="pref-t">Do Not Disturb</span><span class="pref-d">Turn on Focus when a session starts, off when it ends.</span></span>
+        <span class="switch"><input type="checkbox" data-key="focusEnabled"><span></span></span>
+      </label>
+      <label class="pref-row">
+        <span class="pref-text"><span class="pref-t">Resume after restart</span><span class="pref-d">If the Mac restarts mid-session, the lock comes back.</span></span>
+        <span class="switch"><input type="checkbox" data-key="resumeAfterRestart"><span></span></span>
+      </label>
+      <div class="pref-row pref-row-slider">
+        <span class="pref-text"><label class="pref-t" for="confirmDelay">“I’m sure” delay</label><span class="pref-d">How long the unlock confirmation waits before you can press it.</span></span>
+        <span class="slider-wrap"><input class="slider" type="range" id="confirmDelay" min="0" max="10" step="1" data-key="confirmDelaySec"><output class="slider-val" id="confirmDelayVal" for="confirmDelay"></output></span>
+      </div>
+    </section>
+
+    <section class="pref-section" aria-labelledby="pfMusic">
+      <h3 class="eyebrow" id="pfMusic">Music</h3>
+      <label class="pref-row">
+        <span class="pref-text"><span class="pref-t">Open Spotify at the start</span><span class="pref-d">Starts Spotify quietly in the background.</span></span>
+        <span class="switch"><input type="checkbox" data-key="launchSpotify"><span></span></span>
+      </label>
+      <div class="pref-row">
+        <span class="pref-text"><label class="pref-t" for="autoplay">Auto-play</label><span class="pref-d">Start this playlist when a session begins.</span></span>
+        <span class="select-wrap"><select id="autoplay" class="select"></select></span>
+      </div>
+      <div class="pref-row pref-row-slider">
+        <span class="pref-text"><label class="pref-t" for="peekSec">Spotify peek</label><span class="pref-d">How long “Open Spotify” shows the real app before the lock returns.</span></span>
+        <span class="slider-wrap"><input class="slider" type="range" id="peekSec" min="30" max="300" step="15" data-key="peekSeconds"><output class="slider-val" id="peekSecVal" for="peekSec"></output></span>
+      </div>
+      <div class="pref-block">
+        <div class="pref-row-head">
+          <div>
+            <div class="pref-t" id="plLabel">Quick playlists</div>
+            <div class="pref-d">One tap on the lock screen. Paste a Spotify link or URI.</div>
+          </div>
+          <div class="pref-actions">
+            <button type="button" class="btn btn-sm" id="plAdd">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12M12 6v12"/></svg>Add
+            </button>
+          </div>
+        </div>
+        <div class="playlists" id="playlists" role="list" aria-labelledby="plLabel"></div>
+      </div>
+    </section>
+
+    <p class="prefs-foot" id="prefsFoot"></p>
+  </div>
+</aside>
+
+<script src="js/shared/util.js"></script>
+<script src="js/bridge.js"></script>
+<script src="js/mock/mock-setup.js"></script>
+<script src="js/visuals/core.js"></script>
+<script src="js/visuals/aurora.js"></script>
+<script src="js/visuals/drift.js"></script>
+<script src="js/visuals/breath.js"></script>
+<script src="js/visuals/horizon.js"></script>
+<script src="js/visuals/night.js"></script>
+<script src="js/visuals/pulse.js"></script>
+<script src="js/visuals/gallery.js"></script>
+<script src="js/setup.js"></script>
+</body>
+</html>
